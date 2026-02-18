@@ -21,13 +21,17 @@ func main() {
 	if authMode == "" {
 		authMode = provider.AuthModeOpenAIAPIKey
 	}
+	modelID := "gpt-5.2-codex"
+	if authMode == provider.AuthModeChatGPT {
+		modelID = "gpt-5.3-codex"
+	}
 
 	client := provider.NewOpenAIClient()
 	manager := session.NewInMemoryManager("demo-session")
 	toolset := tools.NewCodingTools(".")
 	options := sdk.CreateSessionOptions{
 		SystemPrompt:   "You are a concise coding assistant.",
-		Model:          &model.Model{Provider: "openai", ID: "gpt-5.3-codex"},
+		Model:          &model.Model{Provider: "openai", ID: modelID},
 		ThinkingLevel:  agent.ThinkingHigh,
 		Tools:          toolset,
 		SessionManager: manager,
