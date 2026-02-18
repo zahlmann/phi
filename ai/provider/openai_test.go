@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -157,6 +158,261 @@ func TestOpenAIClientStreamToolCall(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientStreamChatGPTBackendText(t *testing.T) {
+	client := newHTTPTestClient(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://chatgpt.com/backend-api/codex/responses" {
+			t.Fatalf("unexpected request url: %s", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer chatgpt-token" {
+			t.Fatalf("unexpected auth header: %s", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != "acc_123" {
+			t.Fatalf("unexpected account id header: %s", got)
+		}
+
+		req := map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		if req["model"] != "gpt-4o-mini" {
+			t.Fatalf("unexpected model in request: %#v", req["model"])
+		}
+		if req["stream"] != true {
+			t.Fatalf("expected stream=true, got %#v", req["stream"])
+		}
+		if req["store"] != false {
+			t.Fatalf("expected store=false, got %#v", req["store"])
+		}
+
+		sse := strings.Join([]string{
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}",
+			"",
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\" from ChatGPT\"}",
+			"",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}",
+			"",
+		}, "\n")
+		return sseResponse(sse), nil
+	})
+
+	evStream, err := client.Stream(context.Background(), model.Model{
+		Provider: "openai",
+		ID:       "gpt-4o-mini",
+	}, model.Context{
+		Messages: []model.Message{
+			{
+				Role: model.RoleUser,
+				ContentRaw: []any{
+					model.TextContent{Type: model.ContentText, Text: "Hi"},
+				},
+			},
+		},
+	}, StreamOptions{
+		AuthMode:    AuthModeChatGPT,
+		AccessToken: "chatgpt-token",
+		AccountID:   "acc_123",
+	})
+	if err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+
+	seenTextDelta := false
+	for {
+		ev, recvErr := evStream.Recv()
+		if recvErr != nil {
+			break
+		}
+		if ev.Type == stream.EventTextDelta {
+			seenTextDelta = true
+		}
+	}
+	if !seenTextDelta {
+		t.Fatal("expected text delta event")
+	}
+
+	assistant, err := evStream.Result()
+	if err != nil {
+		t.Fatalf("result failed: %v", err)
+	}
+	if assistant.Provider != "chatgpt" {
+		t.Fatalf("unexpected provider: %s", assistant.Provider)
+	}
+	if assistant.Usage.Total != 18 {
+		t.Fatalf("unexpected usage: %#v", assistant.Usage)
+	}
+	if got := extractText(assistant.ContentRaw); got != "Hello from ChatGPT" {
+		t.Fatalf("unexpected assistant text: %q", got)
+	}
+}
+
+func TestOpenAIClientStreamChatGPTBackendToolCall(t *testing.T) {
+	client := newHTTPTestClient(func(r *http.Request) (*http.Response, error) {
+		sse := strings.Join([]string{
+			"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}",
+			"",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_2\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+			"",
+		}, "\n")
+		return sseResponse(sse), nil
+	})
+
+	evStream, err := client.Stream(context.Background(), model.Model{
+		Provider: "openai",
+		ID:       "gpt-4o-mini",
+	}, model.Context{
+		Messages: []model.Message{
+			{
+				Role: model.RoleUser,
+				ContentRaw: []any{
+					model.TextContent{Type: model.ContentText, Text: "Read README"},
+				},
+			},
+		},
+	}, StreamOptions{
+		AuthMode:    AuthModeChatGPT,
+		AccessToken: "chatgpt-token",
+		AccountID:   "acc_123",
+	})
+	if err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+
+	toolEventSeen := false
+	for {
+		ev, recvErr := evStream.Recv()
+		if recvErr != nil {
+			break
+		}
+		if ev.Type == stream.EventToolCall {
+			toolEventSeen = true
+		}
+	}
+	if !toolEventSeen {
+		t.Fatal("expected tool call event")
+	}
+
+	assistant, err := evStream.Result()
+	if err != nil {
+		t.Fatalf("result failed: %v", err)
+	}
+	if assistant.StopReason != model.StopReasonToolUse {
+		t.Fatalf("unexpected stop reason: %s", assistant.StopReason)
+	}
+	if len(assistant.ContentRaw) != 1 {
+		t.Fatalf("expected one content block, got %d", len(assistant.ContentRaw))
+	}
+	call, ok := assistant.ContentRaw[0].(model.ToolCallContent)
+	if !ok {
+		t.Fatalf("expected tool call content, got %T", assistant.ContentRaw[0])
+	}
+	if call.Name != "read_file" {
+		t.Fatalf("unexpected tool name: %s", call.Name)
+	}
+	if call.Arguments["path"] != "README.md" {
+		t.Fatalf("unexpected tool args: %#v", call.Arguments)
+	}
+}
+
+func TestOpenAIClientStreamChatGPTBackendTreatsTextPlainAsSSE(t *testing.T) {
+	client := newHTTPTestClient(func(*http.Request) (*http.Response, error) {
+		sse := strings.Join([]string{
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
+			"",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_3\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+			"",
+		}, "\n")
+		header := make(http.Header)
+		header.Set("Content-Type", "text/plain; charset=utf-8")
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(sse)),
+			Header:     header,
+		}, nil
+	})
+
+	evStream, err := client.Stream(context.Background(), model.Model{
+		Provider: "openai",
+		ID:       "gpt-4o-mini",
+	}, model.Context{
+		Messages: []model.Message{
+			{
+				Role: model.RoleUser,
+				ContentRaw: []any{
+					model.TextContent{Type: model.ContentText, Text: "Hi"},
+				},
+			},
+		},
+	}, StreamOptions{
+		AuthMode:    AuthModeChatGPT,
+		AccessToken: "chatgpt-token",
+		AccountID:   "acc_123",
+	})
+	if err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+
+	for {
+		_, recvErr := evStream.Recv()
+		if recvErr != nil {
+			break
+		}
+	}
+
+	assistant, err := evStream.Result()
+	if err != nil {
+		t.Fatalf("result failed: %v", err)
+	}
+	if got := extractText(assistant.ContentRaw); got != "hello" {
+		t.Fatalf("unexpected assistant text: %q", got)
+	}
+}
+
+func TestChatGPTStreamIgnoresCloseErrorAfterCompleted(t *testing.T) {
+	sse := strings.Join([]string{
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}",
+		"",
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+		"",
+	}, "\n")
+	chunks := [][]byte{
+		[]byte(sse[:len(sse)/2]),
+		[]byte(sse[len(sse)/2:]),
+	}
+
+	ctx := context.Background()
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       &errorAfterChunksReadCloser{chunks: chunks, err: context.Canceled},
+	}
+
+	evStream := newChatGPTResponsesEventStream(reqCtx, cancel, resp, model.Model{
+		Provider: "openai",
+		ID:       "gpt-4o-mini",
+	})
+
+	for {
+		_, recvErr := evStream.Recv()
+		if recvErr != nil {
+			break
+		}
+	}
+
+	assistant, err := evStream.Result()
+	if err != nil {
+		t.Fatalf("expected success after completed event, got %v", err)
+	}
+	if assistant == nil {
+		t.Fatal("expected assistant message")
+	}
+	if got := extractText(assistant.ContentRaw); got != "ok" {
+		t.Fatalf("unexpected assistant text: %q", got)
+	}
+}
+
 func TestOpenAIClientStreamValidation(t *testing.T) {
 	t.Run("api key required", func(t *testing.T) {
 		t.Setenv("OPENAI_API_KEY", "")
@@ -177,6 +433,19 @@ func TestOpenAIClientStreamValidation(t *testing.T) {
 		}, model.Context{}, StreamOptions{APIKey: "test-key"})
 		if err == nil || !strings.Contains(err.Error(), "model id is required") {
 			t.Fatalf("expected model id validation error, got %v", err)
+		}
+	})
+
+	t.Run("chatgpt token required", func(t *testing.T) {
+		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", "")
+		t.Setenv("PHI_CHATGPT_TOKEN_PATH", filepath.Join(t.TempDir(), "missing.json"))
+		client := NewOpenAIClient()
+		_, err := client.Stream(context.Background(), model.Model{
+			Provider: "openai",
+			ID:       "gpt-4o-mini",
+		}, model.Context{}, StreamOptions{AuthMode: AuthModeChatGPT})
+		if err == nil || !strings.Contains(err.Error(), "chatgpt access token is required") {
+			t.Fatalf("expected chatgpt token validation error, got %v", err)
 		}
 	})
 }
@@ -362,4 +631,29 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+type errorAfterChunksReadCloser struct {
+	chunks [][]byte
+	index  int
+	err    error
+}
+
+func (r *errorAfterChunksReadCloser) Read(p []byte) (int, error) {
+	if r.index < len(r.chunks) {
+		chunk := r.chunks[r.index]
+		r.index++
+		n := copy(p, chunk)
+		return n, nil
+	}
+	if r.err != nil {
+		err := r.err
+		r.err = nil
+		return 0, err
+	}
+	return 0, io.EOF
+}
+
+func (r *errorAfterChunksReadCloser) Close() error {
+	return nil
 }

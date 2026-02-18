@@ -36,6 +36,20 @@ type Manager struct {
 	Store  TokenStore
 }
 
+func NewManager(client Client, store TokenStore) *Manager {
+	return &Manager{
+		Client: client,
+		Store:  store,
+	}
+}
+
+func NewDefaultManager() *Manager {
+	return &Manager{
+		Client: NewOAuthClient(),
+		Store:  NewDefaultTokenStore(),
+	}
+}
+
 func (m *Manager) LoadOrRefresh(ctx context.Context) (*Credentials, error) {
 	current, err := m.Store.Load(ctx)
 	if err != nil || current == nil {

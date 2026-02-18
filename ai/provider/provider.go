@@ -7,8 +7,18 @@ import (
 	"github.com/zahlmann/phi/ai/stream"
 )
 
+type AuthMode string
+
+const (
+	AuthModeOpenAIAPIKey AuthMode = "openai_api_key"
+	AuthModeChatGPT      AuthMode = "chatgpt"
+)
+
 type StreamOptions struct {
+	AuthMode    AuthMode
 	APIKey      string
+	AccessToken string
+	AccountID   string
 	SessionID   string
 	BaseURL     string
 	Headers     map[string]string

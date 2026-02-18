@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/zahlmann/phi/agent"
+	openaiauth "github.com/zahlmann/phi/ai/auth/openai"
 	"github.com/zahlmann/phi/ai/model"
 	"github.com/zahlmann/phi/ai/provider"
 	"github.com/zahlmann/phi/ai/stream"
@@ -15,24 +17,55 @@ import (
 )
 
 func main() {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		fmt.Println("Set OPENAI_API_KEY first.")
-		os.Exit(1)
+	authMode := provider.AuthMode(strings.TrimSpace(os.Getenv("PHI_AUTH_MODE")))
+	if authMode == "" {
+		authMode = provider.AuthModeOpenAIAPIKey
 	}
 
 	client := provider.NewOpenAIClient()
 	manager := session.NewInMemoryManager("demo-session")
 	toolset := tools.NewCodingTools(".")
-	s := sdk.CreateAgentSession(sdk.CreateSessionOptions{
+	options := sdk.CreateSessionOptions{
 		SystemPrompt:   "You are a concise coding assistant.",
-		Model:          &model.Model{Provider: "openai", ID: "gpt-4o-mini"},
-		ThinkingLevel:  agent.ThinkingLow,
+		Model:          &model.Model{Provider: "openai", ID: "gpt-5.3-codex"},
+		ThinkingLevel:  agent.ThinkingHigh,
 		Tools:          toolset,
 		SessionManager: manager,
 		ProviderClient: client,
-		APIKey:         apiKey,
-	})
+		AuthMode:       authMode,
+	}
+
+	switch authMode {
+	case provider.AuthModeChatGPT:
+		authManager := openaiauth.NewDefaultManager()
+		if strings.TrimSpace(os.Getenv("PHI_CHATGPT_LOGIN")) == "1" {
+			if _, err := authManager.LoginInteractive(context.Background(), os.Stdin, os.Stdout); err != nil {
+				fmt.Printf("chatgpt login failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		creds, err := authManager.LoadOrRefresh(context.Background())
+		if err != nil {
+			fmt.Printf("failed to load chatgpt credentials: %v\n", err)
+			os.Exit(1)
+		}
+		if creds == nil || strings.TrimSpace(creds.AccessToken) == "" {
+			fmt.Println("No ChatGPT credentials found. Set PHI_CHATGPT_LOGIN=1 to run interactive login.")
+			os.Exit(1)
+		}
+		options.AccessToken = creds.AccessToken
+		options.AccountID = creds.AccountID
+	default:
+		apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+		if apiKey == "" {
+			fmt.Println("Set OPENAI_API_KEY first (or PHI_AUTH_MODE=chatgpt).")
+			os.Exit(1)
+		}
+		options.APIKey = apiKey
+	}
+
+	s := sdk.CreateAgentSession(options)
 
 	unsubscribe := s.Subscribe(func(ev agent.Event) {
 		fmt.Printf("[event] %s", ev.Type)

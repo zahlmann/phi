@@ -22,14 +22,20 @@ type CreateSessionOptions struct {
 	Tools          []agent.Tool
 	SessionManager session.Manager
 	ProviderClient provider.Client
+	AuthMode       provider.AuthMode
 	APIKey         string
+	AccessToken    string
+	AccountID      string
 }
 
 type AgentSession struct {
 	agent          *agent.Agent
 	manager        session.Manager
 	providerClient provider.Client
+	authMode       provider.AuthMode
 	apiKey         string
+	accessToken    string
+	accountID      string
 }
 
 func CreateAgentSession(options CreateSessionOptions) *AgentSession {
@@ -48,7 +54,10 @@ func CreateAgentSession(options CreateSessionOptions) *AgentSession {
 		agent:          agent.New(initial),
 		manager:        manager,
 		providerClient: options.ProviderClient,
+		authMode:       options.AuthMode,
 		apiKey:         options.APIKey,
+		accessToken:    options.AccessToken,
+		accountID:      options.AccountID,
 	}
 }
 
@@ -76,9 +85,12 @@ func (s *AgentSession) Prompt(text string, options PromptOptions) error {
 
 	beforeCount := len(s.agent.State().Messages)
 	if _, err := s.agent.RunTurn(context.Background(), agent.RunnerOptions{
-		Client:    s.providerClient,
-		APIKey:    s.apiKey,
-		SessionID: s.manager.SessionID(),
+		Client:      s.providerClient,
+		AuthMode:    s.authMode,
+		APIKey:      s.apiKey,
+		AccessToken: s.accessToken,
+		AccountID:   s.accountID,
+		SessionID:   s.manager.SessionID(),
 	}); err != nil {
 		return err
 	}
