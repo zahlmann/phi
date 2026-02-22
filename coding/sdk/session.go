@@ -43,11 +43,37 @@ func CreateAgentSession(options CreateSessionOptions) *AgentSession {
 	if manager == nil {
 		manager = session.NewInMemoryManager("session")
 	}
+	rawEntries, thinking, modelProvider, modelID := manager.BuildContext()
+	messages, parsedThinking, parsedProvider, parsedModelID := extractContext(rawEntries)
+	if strings.TrimSpace(parsedThinking) != "" {
+		thinking = parsedThinking
+	}
+	if strings.TrimSpace(parsedProvider) != "" {
+		modelProvider = parsedProvider
+	}
+	if strings.TrimSpace(parsedModelID) != "" {
+		modelID = parsedModelID
+	}
+
+	initialThinking := options.ThinkingLevel
+	if parsed := parseThinkingLevel(thinking); parsed != "" {
+		initialThinking = parsed
+	}
+	initialModel := options.Model
+	if initialModel == nil && (strings.TrimSpace(modelProvider) != "" || strings.TrimSpace(modelID) != "") {
+		initialModel = &model.Model{
+			Provider: strings.TrimSpace(modelProvider),
+			ID:       strings.TrimSpace(modelID),
+		}
+	}
+	if initialModel == nil {
+		initialModel = options.Model
+	}
 	initial := agent.State{
 		SystemPrompt: options.SystemPrompt,
-		Model:        options.Model,
-		Thinking:     options.ThinkingLevel,
-		Messages:     []any{},
+		Model:        initialModel,
+		Thinking:     initialThinking,
+		Messages:     append([]any{}, messages...),
 		Tools:        options.Tools,
 	}
 	return &AgentSession{
@@ -135,4 +161,71 @@ func userMessage(text string, images []model.ImageContent) model.Message {
 		Role:       model.RoleUser,
 		ContentRaw: content,
 	}
+}
+
+func parseThinkingLevel(raw string) agent.ThinkingLevel {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(agent.ThinkingNone):
+		return agent.ThinkingNone
+	case string(agent.ThinkingMinimal):
+		return agent.ThinkingMinimal
+	case string(agent.ThinkingLow):
+		return agent.ThinkingLow
+	case string(agent.ThinkingMedium):
+		return agent.ThinkingMedium
+	case string(agent.ThinkingHigh):
+		return agent.ThinkingHigh
+	case string(agent.ThinkingXHigh):
+		return agent.ThinkingXHigh
+	default:
+		return ""
+	}
+}
+
+func extractContext(entries []any) (messages []any, thinkingLevel string, modelProvider string, modelID string) {
+	messages = []any{}
+	thinkingLevel = ""
+	modelProvider = ""
+	modelID = ""
+
+	for _, item := range entries {
+		switch v := item.(type) {
+		case model.Message:
+			messages = append(messages, v)
+		case model.AssistantMessage:
+			messages = append(messages, v)
+		case session.MessageEntry:
+			if v.Message != nil {
+				messages = append(messages, v.Message)
+			}
+		case session.ThinkingLevelChangeEntry:
+			if strings.TrimSpace(v.ThinkingLevel) != "" {
+				thinkingLevel = v.ThinkingLevel
+			}
+		case session.ModelChangeEntry:
+			modelProvider = strings.TrimSpace(v.Provider)
+			modelID = strings.TrimSpace(v.ModelID)
+		case map[string]any:
+			entryType, _ := v["type"].(string)
+			switch entryType {
+			case "message":
+				if msg, ok := v["message"]; ok && msg != nil {
+					messages = append(messages, msg)
+				}
+			case "thinking_level_change":
+				if level, ok := v["thinkingLevel"].(string); ok && strings.TrimSpace(level) != "" {
+					thinkingLevel = level
+				}
+			case "model_change":
+				if providerRaw, ok := v["provider"].(string); ok {
+					modelProvider = strings.TrimSpace(providerRaw)
+				}
+				if modelRaw, ok := v["modelId"].(string); ok {
+					modelID = strings.TrimSpace(modelRaw)
+				}
+			}
+		}
+	}
+
+	return messages, thinkingLevel, modelProvider, modelID
 }

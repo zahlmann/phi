@@ -16,7 +16,7 @@ func TestRuntimeCreatesSessionAndProcessesPrompt(t *testing.T) {
 	runtime := NewRuntime(func(sessionID string) (*AgentSession, error) {
 		return CreateAgentSession(CreateSessionOptions{
 			SystemPrompt:   "test",
-			ThinkingLevel:  agent.ThinkingOff,
+			ThinkingLevel:  agent.ThinkingNone,
 			SessionManager: manager,
 		}), nil
 	}, agent.QueueOptions{Workers: 1, BufferSize: 4, RetryDelay: time.Millisecond})

@@ -60,7 +60,7 @@ func (m *InMemoryManager) AppendThinkingLevelChange(level string) (string, error
 }
 
 func (m *InMemoryManager) BuildContext() ([]any, string, string, string) {
-	return append([]any{}, m.entries...), "off", "", ""
+	return append([]any{}, m.entries...), "none", "", ""
 }
 
 type FileManager struct {
@@ -146,7 +146,7 @@ func (m *FileManager) BuildContext() ([]any, string, string, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := append([]any{}, m.entries...)
-	return out, "off", "", ""
+	return out, "none", "", ""
 }
 
 func (m *FileManager) append(entry any) error {

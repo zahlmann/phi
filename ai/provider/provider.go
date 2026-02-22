@@ -15,15 +15,16 @@ const (
 )
 
 type StreamOptions struct {
-	AuthMode    AuthMode
-	APIKey      string
-	AccessToken string
-	AccountID   string
-	SessionID   string
-	BaseURL     string
-	Headers     map[string]string
-	Temperature *float64
-	MaxTokens   int
+	AuthMode        AuthMode
+	APIKey          string
+	AccessToken     string
+	AccountID       string
+	SessionID       string
+	ReasoningEffort string
+	BaseURL         string
+	Headers         map[string]string
+	Temperature     *float64
+	MaxTokens       int
 }
 
 type Client interface {

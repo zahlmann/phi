@@ -16,7 +16,7 @@ func TestSessionPromptWithoutProviderAppendsUserMessage(t *testing.T) {
 	manager := &recordingManager{id: "s1"}
 	s := CreateAgentSession(CreateSessionOptions{
 		SystemPrompt:   "help",
-		ThinkingLevel:  agent.ThinkingOff,
+		ThinkingLevel:  agent.ThinkingNone,
 		SessionManager: manager,
 	})
 
@@ -68,7 +68,7 @@ func TestSessionPromptRunsProviderTurnAndPersistsAssistantMessages(t *testing.T)
 	s := CreateAgentSession(CreateSessionOptions{
 		SystemPrompt:   "help",
 		Model:          &model.Model{Provider: "mock", ID: "m1"},
-		ThinkingLevel:  agent.ThinkingOff,
+		ThinkingLevel:  agent.ThinkingNone,
 		SessionManager: manager,
 		ProviderClient: client,
 	})
@@ -106,7 +106,7 @@ func TestSessionPromptExecutesTools(t *testing.T) {
 	s := CreateAgentSession(CreateSessionOptions{
 		SystemPrompt:   "help",
 		Model:          &model.Model{Provider: "mock", ID: "m1"},
-		ThinkingLevel:  agent.ThinkingOff,
+		ThinkingLevel:  agent.ThinkingNone,
 		Tools:          []agent.Tool{tool},
 		SessionManager: manager,
 		ProviderClient: client,
@@ -177,6 +177,15 @@ func TestSessionSteerAndFollowUpQueue(t *testing.T) {
 	}
 }
 
+func TestParseThinkingLevel(t *testing.T) {
+	if got := parseThinkingLevel("none"); got != agent.ThinkingNone {
+		t.Fatalf("expected none, got %q", got)
+	}
+	if got := parseThinkingLevel("bogus"); got != "" {
+		t.Fatalf("expected unknown level to be unsupported, got %q", got)
+	}
+}
+
 type testWriteTool struct {
 	calls int
 }
@@ -233,7 +242,7 @@ func (m *recordingManager) AppendThinkingLevelChange(level string) (string, erro
 }
 
 func (m *recordingManager) BuildContext() ([]any, string, string, string) {
-	return append([]any{}, m.appended...), "off", "", ""
+	return append([]any{}, m.appended...), "none", "", ""
 }
 
 func textStream(text string, m model.Model) stream.EventStream {

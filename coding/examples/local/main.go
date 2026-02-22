@@ -31,7 +31,7 @@ func main() {
 	s := sdk.CreateAgentSession(sdk.CreateSessionOptions{
 		SystemPrompt:   "Run a deterministic local tool flow.",
 		Model:          &model.Model{Provider: "mock", ID: "deterministic-local"},
-		ThinkingLevel:  agent.ThinkingOff,
+		ThinkingLevel:  agent.ThinkingNone,
 		Tools:          tools.NewCodingTools(repoRoot),
 		SessionManager: session.NewInMemoryManager("local-demo"),
 		ProviderClient: client,

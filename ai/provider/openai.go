@@ -70,18 +70,22 @@ func (c *OpenAIClient) streamOpenAIAPI(
 		return nil, errors.New("openai api key is required")
 	}
 
-	request := buildOpenAIChatRequest(m, conversation, options)
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return nil, err
-	}
-
 	baseURL := strings.TrimRight(options.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = strings.TrimRight(c.BaseURL, "/")
 	}
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
+	}
+
+	if shouldUseResponsesAPIModel(m.ID) {
+		return c.streamOpenAIResponsesAPI(ctx, m, conversation, options, apiKey, baseURL)
+	}
+
+	request := buildOpenAIChatRequest(m, conversation, options)
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
 	}
 
 	reqCtx, cancel := context.WithCancel(ctx)
@@ -121,6 +125,58 @@ func (c *OpenAIClient) streamOpenAIAPI(
 	return newOpenAIEventStream(reqCtx, cancel, resp, m), nil
 }
 
+func (c *OpenAIClient) streamOpenAIResponsesAPI(
+	ctx context.Context,
+	m model.Model,
+	conversation model.Context,
+	options StreamOptions,
+	apiKey string,
+	baseURL string,
+) (stream.EventStream, error) {
+	request := buildChatGPTResponsesRequest(m, conversation, options)
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+
+	reqCtx, cancel := context.WithCancel(ctx)
+	url := strings.TrimRight(baseURL, "/") + "/responses"
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	for k, v := range options.Headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	client := streamingHTTPClient(c.HTTPClient)
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("openai request send failed: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel()
+		return nil, fmt.Errorf("openai request failed: status=%d body=%s", resp.StatusCode, string(body))
+	}
+
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "text/event-stream") {
+		parsed, parseErr := parseChatGPTNonStreamingResponse(resp, m, "openai")
+		cancel()
+		return parsed, parseErr
+	}
+
+	return newChatGPTResponsesEventStream(reqCtx, cancel, resp, m, "openai"), nil
+}
+
 func (c *OpenAIClient) streamChatGPTBackend(
 	ctx context.Context,
 	m model.Model,
@@ -132,7 +188,7 @@ func (c *OpenAIClient) streamChatGPTBackend(
 		return nil, err
 	}
 
-	request := buildChatGPTResponsesRequest(m, conversation)
+	request := buildChatGPTResponsesRequest(m, conversation, options)
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -175,7 +231,7 @@ func (c *OpenAIClient) streamChatGPTBackend(
 		)
 	}
 
-	return newChatGPTResponsesEventStream(reqCtx, cancel, resp, m), nil
+	return newChatGPTResponsesEventStream(reqCtx, cancel, resp, m, "chatgpt"), nil
 }
 
 func normalizeAuthMode(mode AuthMode) AuthMode {
@@ -185,6 +241,21 @@ func normalizeAuthMode(mode AuthMode) AuthMode {
 	default:
 		return AuthModeOpenAIAPIKey
 	}
+}
+
+func normalizeReasoningEffort(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return value
+	default:
+		return ""
+	}
+}
+
+func shouldUseResponsesAPIModel(modelID string) bool {
+	id := strings.ToLower(strings.TrimSpace(modelID))
+	return strings.Contains(id, "codex") || strings.HasPrefix(id, "gpt-5")
 }
 
 func resolveChatGPTAuth(ctx context.Context, options StreamOptions) (string, string, error) {
@@ -1022,23 +1093,35 @@ func mapStopReason(reason string) model.StopReason {
 }
 
 type chatGPTResponsesRequest struct {
-	Model             string           `json:"model"`
-	Instructions      string           `json:"instructions,omitempty"`
-	Input             []any            `json:"input"`
-	Tools             []map[string]any `json:"tools,omitempty"`
-	ToolChoice        string           `json:"tool_choice,omitempty"`
-	ParallelToolCalls bool             `json:"parallel_tool_calls,omitempty"`
-	Store             bool             `json:"store"`
-	Stream            bool             `json:"stream"`
+	Model             string              `json:"model"`
+	Instructions      string              `json:"instructions,omitempty"`
+	Input             []any               `json:"input"`
+	Tools             []map[string]any    `json:"tools,omitempty"`
+	ToolChoice        string              `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool                `json:"parallel_tool_calls,omitempty"`
+	Reasoning         *responsesReasoning `json:"reasoning,omitempty"`
+	Store             bool                `json:"store"`
+	Stream            bool                `json:"stream"`
 }
 
-func buildChatGPTResponsesRequest(m model.Model, conversation model.Context) chatGPTResponsesRequest {
+type responsesReasoning struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+func buildChatGPTResponsesRequest(
+	m model.Model,
+	conversation model.Context,
+	options StreamOptions,
+) chatGPTResponsesRequest {
 	req := chatGPTResponsesRequest{
 		Model:        m.ID,
 		Instructions: strings.TrimSpace(conversation.SystemPrompt),
 		Input:        toResponsesInput(conversation.Messages),
 		Store:        false,
 		Stream:       true,
+	}
+	if effort := normalizeReasoningEffort(options.ReasoningEffort); effort != "" {
+		req.Reasoning = &responsesReasoning{Effort: effort}
 	}
 	if len(conversation.Tools) > 0 {
 		req.Tools = convertResponsesTools(conversation.Tools)
@@ -1170,6 +1253,7 @@ func toResponsesInput(messages []model.Message) []any {
 type chatGPTResponsesEventStream struct {
 	events    chan openAIEventItem
 	result    chan openAIResultItem
+	provider  string
 	closeFn   func()
 	closeOnce sync.Once
 }
@@ -1183,6 +1267,7 @@ type chatGPTResponsesSSEEvent struct {
 
 type chatGPTResponsesAggregation struct {
 	requestModel  model.Model
+	provider      string
 	responseModel string
 	text          strings.Builder
 	toolCalls     []model.ToolCallContent
@@ -1201,10 +1286,12 @@ func newChatGPTResponsesEventStream(
 	cancel context.CancelFunc,
 	resp *http.Response,
 	m model.Model,
+	provider string,
 ) *chatGPTResponsesEventStream {
 	s := &chatGPTResponsesEventStream{
-		events: make(chan openAIEventItem, 64),
-		result: make(chan openAIResultItem, 1),
+		events:   make(chan openAIEventItem, 64),
+		result:   make(chan openAIResultItem, 1),
+		provider: strings.TrimSpace(provider),
 		closeFn: func() {
 			cancel()
 			_ = resp.Body.Close()
@@ -1245,8 +1332,12 @@ func (s *chatGPTResponsesEventStream) consume(ctx context.Context, resp *http.Re
 
 	agg := &chatGPTResponsesAggregation{
 		requestModel: m,
+		provider:     s.provider,
 		seenToolCall: map[string]bool{},
 		stopReason:   model.StopReasonStop,
+	}
+	if agg.provider == "" {
+		agg.provider = "chatgpt"
 	}
 	s.pushEvent(stream.Event{Type: stream.EventStart})
 
@@ -1430,7 +1521,7 @@ func (a *chatGPTResponsesAggregation) buildAssistant() *model.AssistantMessage {
 	return &model.AssistantMessage{
 		Role:       model.RoleAssistant,
 		ContentRaw: content,
-		Provider:   "chatgpt",
+		Provider:   a.provider,
 		Model:      modelID,
 		StopReason: a.stopReason,
 		Usage:      a.usage,
@@ -1438,7 +1529,11 @@ func (a *chatGPTResponsesAggregation) buildAssistant() *model.AssistantMessage {
 	}
 }
 
-func parseChatGPTNonStreamingResponse(resp *http.Response, requestModel model.Model) (stream.EventStream, error) {
+func parseChatGPTNonStreamingResponse(
+	resp *http.Response,
+	requestModel model.Model,
+	provider string,
+) (stream.EventStream, error) {
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
@@ -1458,9 +1553,13 @@ func parseChatGPTNonStreamingResponse(resp *http.Response, requestModel model.Mo
 
 	agg := &chatGPTResponsesAggregation{
 		requestModel: requestModel,
+		provider:     strings.TrimSpace(provider),
 		seenToolCall: map[string]bool{},
 		stopReason:   model.StopReasonStop,
 		completed:    true,
+	}
+	if agg.provider == "" {
+		agg.provider = "chatgpt"
 	}
 	agg.updateFromResponse(response)
 

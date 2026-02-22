@@ -73,6 +73,25 @@ func TestRunTurnAppendsAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestRunTurnForwardsReasoningEffort(t *testing.T) {
+	a := newTestAgent(nil)
+	client := provider.MockClient{
+		Handler: func(ctx context.Context, m model.Model, conversation model.Context, options provider.StreamOptions) (stream.EventStream, error) {
+			if options.ReasoningEffort != string(ThinkingNone) {
+				t.Fatalf("unexpected reasoning effort: %q", options.ReasoningEffort)
+			}
+			return textStream("ok", m), nil
+		},
+	}
+
+	if _, err := a.RunTurn(context.Background(), RunnerOptions{
+		Client:    client,
+		SessionID: "s_reasoning",
+	}); err != nil {
+		t.Fatalf("run turn failed: %v", err)
+	}
+}
+
 func TestRunTurnExecutesToolCalls(t *testing.T) {
 	tool := &testTool{name: "write_file", resultText: "file written"}
 	a := newTestAgent([]Tool{tool})
@@ -273,7 +292,7 @@ func newTestAgent(tools []Tool) *Agent {
 			Provider: "mock",
 			ID:       "test-model",
 		},
-		Thinking: ThinkingOff,
+		Thinking: ThinkingNone,
 		Messages: []any{
 			model.Message{
 				Role:       model.RoleUser,

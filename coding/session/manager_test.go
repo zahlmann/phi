@@ -23,7 +23,7 @@ func TestInMemoryManager(t *testing.T) {
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(entries))
 	}
-	if thinking != "off" || provider != "" || modelID != "" {
+	if thinking != "none" || provider != "" || modelID != "" {
 		t.Fatalf("unexpected defaults from BuildContext: thinking=%q provider=%q modelID=%q", thinking, provider, modelID)
 	}
 }

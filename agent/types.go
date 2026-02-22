@@ -5,7 +5,7 @@ import "github.com/zahlmann/phi/ai/model"
 type ThinkingLevel string
 
 const (
-	ThinkingOff     ThinkingLevel = "off"
+	ThinkingNone    ThinkingLevel = "none"
 	ThinkingMinimal ThinkingLevel = "minimal"
 	ThinkingLow     ThinkingLevel = "low"
 	ThinkingMedium  ThinkingLevel = "medium"

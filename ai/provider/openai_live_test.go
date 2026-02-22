@@ -19,7 +19,7 @@ func TestOpenAIClientLiveWithAPIKey(t *testing.T) {
 
 	modelID := os.Getenv("OPENAI_MODEL")
 	if modelID == "" {
-		modelID = "gpt-4o-mini"
+		modelID = "gpt-5.2-codex"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

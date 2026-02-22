@@ -16,17 +16,18 @@ import (
 
 func TestOpenAIClientStreamText(t *testing.T) {
 	client := newHTTPTestClient(func(r *http.Request) (*http.Response, error) {
-		rec := struct {
-			Model  string `json:"model"`
-			Stream bool   `json:"stream"`
-		}{}
-		if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+		if got := r.URL.String(); got != "https://example.invalid/v1/responses" {
+			t.Fatalf("unexpected request url: %s", got)
+		}
+
+		req := map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("bad request decode: %v", err)
 		}
-		if rec.Model != "gpt-4o-mini" {
-			t.Fatalf("unexpected model: %v", rec.Model)
+		if req["model"] != "gpt-5.2-codex" {
+			t.Fatalf("unexpected model: %v", req["model"])
 		}
-		if !rec.Stream {
+		if req["stream"] != true {
 			t.Fatal("expected stream=true")
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
@@ -34,11 +35,11 @@ func TestOpenAIClientStreamText(t *testing.T) {
 		}
 
 		sse := strings.Join([]string{
-			"data: {\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}",
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}",
 			"",
-			"data: {\"choices\":[{\"delta\":{\"content\":\" from OpenAI\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}",
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\" from OpenAI\"}",
 			"",
-			"data: [DONE]",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_text\",\"model\":\"gpt-5.2-codex\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}",
 			"",
 		}, "\n")
 		return sseResponse(sse), nil
@@ -46,7 +47,7 @@ func TestOpenAIClientStreamText(t *testing.T) {
 
 	evStream, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.2-codex",
 	}, model.Context{
 		SystemPrompt: "You are helpful",
 		Messages: []model.Message{
@@ -80,7 +81,7 @@ func TestOpenAIClientStreamText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("result failed: %v", err)
 	}
-	if assistant.Model != "gpt-4o-mini" {
+	if assistant.Model != "gpt-5.2-codex" {
 		t.Fatalf("unexpected model: %s", assistant.Model)
 	}
 	if assistant.Usage.Total != 15 {
@@ -92,14 +93,28 @@ func TestOpenAIClientStreamText(t *testing.T) {
 	}
 }
 
-func TestOpenAIClientStreamToolCall(t *testing.T) {
+func TestOpenAIClientStreamCodexUsesResponsesAPI(t *testing.T) {
 	client := newHTTPTestClient(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://example.invalid/v1/responses" {
+			t.Fatalf("unexpected request url: %s", got)
+		}
+
+		req := map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+		if req["model"] != "gpt-5.2-codex" {
+			t.Fatalf("unexpected model in request: %#v", req["model"])
+		}
+		reasoning, _ := req["reasoning"].(map[string]any)
+		if reasoning["effort"] != "none" {
+			t.Fatalf("unexpected reasoning payload: %#v", req["reasoning"])
+		}
+
 		sse := strings.Join([]string{
-			"data: {\"model\":\"gpt-4o-mini\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]},\"finish_reason\":null}]}",
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}",
 			"",
-			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
-			"",
-			"data: [DONE]",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex\",\"model\":\"gpt-5.2-codex\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
 			"",
 		}, "\n")
 		return sseResponse(sse), nil
@@ -107,7 +122,77 @@ func TestOpenAIClientStreamToolCall(t *testing.T) {
 
 	evStream, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.2-codex",
+	}, model.Context{
+		Messages: []model.Message{
+			{
+				Role: model.RoleUser,
+				ContentRaw: []any{
+					model.TextContent{Type: model.ContentText, Text: "Hi"},
+				},
+			},
+		},
+	}, StreamOptions{
+		APIKey:          "test-key",
+		ReasoningEffort: "none",
+	})
+	if err != nil {
+		t.Fatalf("stream failed: %v", err)
+	}
+
+	for {
+		_, recvErr := evStream.Recv()
+		if recvErr != nil {
+			break
+		}
+	}
+
+	assistant, err := evStream.Result()
+	if err != nil {
+		t.Fatalf("result failed: %v", err)
+	}
+	if assistant.Provider != "openai" {
+		t.Fatalf("unexpected provider: %s", assistant.Provider)
+	}
+	if got := extractText(assistant.ContentRaw); got != "OK" {
+		t.Fatalf("unexpected assistant text: %q", got)
+	}
+}
+
+func TestNormalizeReasoningEffort(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "none", want: "none"},
+		{in: "low", want: "low"},
+		{in: "medium", want: "medium"},
+		{in: "high", want: "high"},
+		{in: "xhigh", want: "xhigh"},
+		{in: "minimal", want: "minimal"},
+		{in: "bogus", want: ""},
+	}
+	for _, tc := range tests {
+		if got := normalizeReasoningEffort(tc.in); got != tc.want {
+			t.Fatalf("normalizeReasoningEffort(%q): got=%q want=%q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestOpenAIClientStreamToolCall(t *testing.T) {
+	client := newHTTPTestClient(func(r *http.Request) (*http.Response, error) {
+		sse := strings.Join([]string{
+			"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}",
+			"",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool\",\"model\":\"gpt-5.2-codex\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+			"",
+		}, "\n")
+		return sseResponse(sse), nil
+	})
+
+	evStream, err := client.Stream(context.Background(), model.Model{
+		Provider: "openai",
+		ID:       "gpt-5.2-codex",
 	}, model.Context{
 		Messages: []model.Message{
 			{
@@ -174,7 +259,7 @@ func TestOpenAIClientStreamChatGPTBackendText(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
 		}
-		if req["model"] != "gpt-4o-mini" {
+		if req["model"] != "gpt-5.3-codex" {
 			t.Fatalf("unexpected model in request: %#v", req["model"])
 		}
 		if req["stream"] != true {
@@ -189,7 +274,7 @@ func TestOpenAIClientStreamChatGPTBackendText(t *testing.T) {
 			"",
 			"data: {\"type\":\"response.output_text.delta\",\"delta\":\" from ChatGPT\"}",
 			"",
-			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}",
 			"",
 		}, "\n")
 		return sseResponse(sse), nil
@@ -197,7 +282,7 @@ func TestOpenAIClientStreamChatGPTBackendText(t *testing.T) {
 
 	evStream, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.3-codex",
 	}, model.Context{
 		Messages: []model.Message{
 			{
@@ -258,7 +343,7 @@ func TestOpenAIClientStreamChatGPTBackendToolCall(t *testing.T) {
 
 	evStream, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.3-codex",
 	}, model.Context{
 		Messages: []model.Message{
 			{
@@ -318,7 +403,7 @@ func TestOpenAIClientStreamChatGPTBackendTreatsTextPlainAsSSE(t *testing.T) {
 		sse := strings.Join([]string{
 			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
 			"",
-			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_3\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_3\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
 			"",
 		}, "\n")
 		header := make(http.Header)
@@ -332,7 +417,7 @@ func TestOpenAIClientStreamChatGPTBackendTreatsTextPlainAsSSE(t *testing.T) {
 
 	evStream, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.3-codex",
 	}, model.Context{
 		Messages: []model.Message{
 			{
@@ -371,7 +456,7 @@ func TestChatGPTStreamIgnoresCloseErrorAfterCompleted(t *testing.T) {
 	sse := strings.Join([]string{
 		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}",
 		"",
-		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-4o-mini\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.3-codex\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}",
 		"",
 	}, "\n")
 	chunks := [][]byte{
@@ -391,8 +476,8 @@ func TestChatGPTStreamIgnoresCloseErrorAfterCompleted(t *testing.T) {
 
 	evStream := newChatGPTResponsesEventStream(reqCtx, cancel, resp, model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
-	})
+		ID:       "gpt-5.3-codex",
+	}, "chatgpt")
 
 	for {
 		_, recvErr := evStream.Recv()
@@ -419,7 +504,7 @@ func TestOpenAIClientStreamValidation(t *testing.T) {
 		client := NewOpenAIClient()
 		_, err := client.Stream(context.Background(), model.Model{
 			Provider: "openai",
-			ID:       "gpt-4o-mini",
+			ID:       "gpt-5.2-codex",
 		}, model.Context{}, StreamOptions{})
 		if err == nil || !strings.Contains(err.Error(), "openai api key is required") {
 			t.Fatalf("expected api key validation error, got %v", err)
@@ -442,7 +527,7 @@ func TestOpenAIClientStreamValidation(t *testing.T) {
 		client := NewOpenAIClient()
 		_, err := client.Stream(context.Background(), model.Model{
 			Provider: "openai",
-			ID:       "gpt-4o-mini",
+			ID:       "gpt-5.3-codex",
 		}, model.Context{}, StreamOptions{AuthMode: AuthModeChatGPT})
 		if err == nil || !strings.Contains(err.Error(), "chatgpt access token is required") {
 			t.Fatalf("expected chatgpt token validation error, got %v", err)
@@ -461,7 +546,7 @@ func TestOpenAIClientStreamHTTPStatusError(t *testing.T) {
 
 	_, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.2-codex",
 	}, model.Context{}, StreamOptions{APIKey: "test-key"})
 	if err == nil {
 		t.Fatal("expected status error")
@@ -474,14 +559,15 @@ func TestOpenAIClientStreamHTTPStatusError(t *testing.T) {
 func TestOpenAIClientStreamParsesNonStreamingResponse(t *testing.T) {
 	client := newHTTPTestClient(func(*http.Request) (*http.Response, error) {
 		body := `{
-			"model":"gpt-4o-mini",
-			"choices":[
+			"id":"resp_nonstream",
+			"model":"gpt-5.2-codex",
+			"output":[
 				{
-					"finish_reason":"stop",
-					"message":{"content":"hello from json","tool_calls":[]}
+					"type":"message",
+					"content":[{"type":"output_text","text":"hello from json"}]
 				}
 			],
-			"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}
+			"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}
 		}`
 		header := make(http.Header)
 		header.Set("Content-Type", "application/json")
@@ -494,7 +580,7 @@ func TestOpenAIClientStreamParsesNonStreamingResponse(t *testing.T) {
 
 	evStream, err := client.Stream(context.Background(), model.Model{
 		Provider: "openai",
-		ID:       "gpt-4o-mini",
+		ID:       "gpt-5.2-codex",
 	}, model.Context{}, StreamOptions{APIKey: "test-key"})
 	if err != nil {
 		t.Fatalf("stream failed: %v", err)
