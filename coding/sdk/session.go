@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/zahlmann/phi/agent"
@@ -90,52 +91,84 @@ func CreateAgentSession(options CreateSessionOptions) *AgentSession {
 func (s *AgentSession) Prompt(text string, options PromptOptions) error {
 	msg := userMessage(text, options.Images)
 	if s.agent.State().IsStreaming {
-		switch options.StreamingBehavior {
-		case "followUp":
-			s.agent.FollowUp(msg)
-			return nil
-		case "steer":
-			s.agent.Steer(msg)
-			return nil
-		}
+		s.agent.Queue(msg)
+		return nil
 	}
+	_, err := s.processMessage(context.Background(), msg)
+	return err
+}
 
+func (s *AgentSession) QueueMessage(text string, images []model.ImageContent) {
+	s.agent.Queue(userMessage(text, images))
+}
+
+func (s *AgentSession) QueueRawMessage(message any) {
+	s.agent.Queue(message)
+}
+
+func (s *AgentSession) PopQueuedMessage() (any, bool) {
+	return s.agent.DequeuePending()
+}
+
+func (s *AgentSession) PendingCount() int {
+	return s.agent.PendingCount()
+}
+
+func (s *AgentSession) ProcessQueuedMessage(ctx context.Context, queued any) (*model.AssistantMessage, error) {
+	if queued == nil {
+		return nil, errors.New("queued message is nil")
+	}
+	msg, ok := queued.(model.Message)
+	if !ok {
+		return nil, errors.New("queued message must be a model.Message")
+	}
+	return s.processMessage(ctx, msg)
+}
+
+func (s *AgentSession) AppendAssistantMessage(message model.AssistantMessage) error {
+	s.agent.AddMessage(message)
+	_, err := s.manager.AppendMessage(message)
+	return err
+}
+
+func (s *AgentSession) processMessage(ctx context.Context, msg model.Message) (*model.AssistantMessage, error) {
 	s.agent.Prompt(msg)
 	if _, err := s.manager.AppendMessage(msg); err != nil {
-		return err
+		return nil, err
 	}
 
 	if s.providerClient == nil {
-		return nil
+		return nil, nil
 	}
 
 	beforeCount := len(s.agent.State().Messages)
-	if _, err := s.agent.RunTurn(context.Background(), agent.RunnerOptions{
+	assistant, err := s.agent.RunTurn(ctx, agent.RunnerOptions{
 		Client:      s.providerClient,
 		AuthMode:    s.authMode,
 		APIKey:      s.apiKey,
 		AccessToken: s.accessToken,
 		AccountID:   s.accountID,
 		SessionID:   s.manager.SessionID(),
-	}); err != nil {
-		return err
+	})
+	if err != nil {
+		return assistant, err
 	}
 
 	after := s.agent.State().Messages
 	for i := beforeCount; i < len(after); i++ {
 		if _, err := s.manager.AppendMessage(after[i]); err != nil {
-			return err
+			return assistant, err
 		}
 	}
-	return nil
+	return assistant, nil
 }
 
 func (s *AgentSession) Steer(text string) {
-	s.agent.Steer(userMessage(text, nil))
+	s.agent.Queue(userMessage(text, nil))
 }
 
 func (s *AgentSession) FollowUp(text string) {
-	s.agent.FollowUp(userMessage(text, nil))
+	s.agent.Queue(userMessage(text, nil))
 }
 
 func (s *AgentSession) Subscribe(handler func(agent.Event)) (unsubscribe func()) {

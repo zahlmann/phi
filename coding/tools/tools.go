@@ -9,9 +9,6 @@ const (
 
 func NewCodingTools(cwd string) []agent.Tool {
 	return []agent.Tool{
-		NewWriteFileTool(cwd),
-		NewReadFileTool(cwd),
-		NewEditTool(cwd),
 		NewBashTool(cwd, 0),
 	}
 }

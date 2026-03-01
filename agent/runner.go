@@ -104,6 +104,9 @@ func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.Assi
 				IsError:    hasError,
 				Message:    toolResultMessage,
 			})
+			if queuedMessage, ok := a.DequeuePending(); ok {
+				a.appendMessage(queuedMessage)
+			}
 		}
 	}
 

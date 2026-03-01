@@ -7,14 +7,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
-	"github.com/zahlmann/phi/agent"
+	"github.com/zahlmann/phi"
 	"github.com/zahlmann/phi/ai/model"
 	"github.com/zahlmann/phi/ai/provider"
 	"github.com/zahlmann/phi/ai/stream"
-	"github.com/zahlmann/phi/coding/sdk"
-	"github.com/zahlmann/phi/coding/session"
-	"github.com/zahlmann/phi/coding/tools"
 )
 
 func main() {
@@ -24,98 +22,94 @@ func main() {
 		os.Exit(1)
 	}
 
-	demoPath := "tmp_local_demo/main.go"
-	_ = os.RemoveAll(filepath.Join(repoRoot, "tmp_local_demo"))
+	demoPath := filepath.Join(repoRoot, "tmp_local_demo.txt")
+	_ = os.Remove(demoPath)
 
-	client := provider.MockClient{Handler: deterministicHandler(demoPath)}
-	s := sdk.CreateAgentSession(sdk.CreateSessionOptions{
-		SystemPrompt:   "Run a deterministic local tool flow.",
-		Model:          &model.Model{Provider: "mock", ID: "deterministic-local"},
-		ThinkingLevel:  agent.ThinkingNone,
-		Tools:          tools.NewCodingTools(repoRoot),
-		SessionManager: session.NewInMemoryManager("local-demo"),
+	client := provider.MockClient{
+		Handler: func(ctx context.Context, m model.Model, conversation model.Context, options provider.StreamOptions) (stream.EventStream, error) {
+			if !conversationHasToolResult(conversation.Messages) {
+				return toolCallStream("call_1", "bash", map[string]any{
+					"command": "printf 'local demo from bash tool\\n' > tmp_local_demo.txt && cat tmp_local_demo.txt",
+				}, m), nil
+			}
+			return textStream("Local deterministic demo complete using bash-only tooling.", m), nil
+		},
+	}
+
+	rt := phi.NewRuntime(phi.RuntimeOptions{
 		ProviderClient: client,
+		SystemPrompt:   "Run a deterministic local tool flow with bash only.",
+		WorkingDir:     repoRoot,
+		ModelID:        "deterministic-local",
 	})
+	defer rt.Close()
 
-	unsubscribe := s.Subscribe(func(ev agent.Event) {
-		if ev.ToolName != "" {
-			fmt.Printf("[%s] tool=%s call_id=%s\n", ev.Type, ev.ToolName, ev.ToolCallID)
-		}
-		switch msg := ev.Message.(type) {
-		case model.Message:
-			if msg.Role == model.RoleToolResult {
-				fmt.Printf("[tool_result] %s\n", extractText(msg.ContentRaw))
+	final := make(chan phi.Event, 1)
+	unsubscribe := rt.Subscribe(func(ev phi.Event) {
+		switch ev.Type {
+		case phi.EventToolCallStarted:
+			fmt.Printf("[tool_started] %s (%s)\n", ev.ToolName, ev.ToolCallID)
+		case phi.EventToolCallFinished:
+			fmt.Printf("[tool_finished] %s (%s) error=%v\n", ev.ToolName, ev.ToolCallID, ev.IsError)
+			if ev.ToolResult != nil {
+				fmt.Printf("[tool_output] %s\n", extractText(ev.ToolResult.ContentRaw))
 			}
-		case model.AssistantMessage:
-			text := extractText(msg.ContentRaw)
-			if strings.TrimSpace(text) != "" {
-				fmt.Printf("[assistant_final] %s\n", text)
-			}
+		case phi.EventFinalMessage:
+			final <- ev
 		}
 	})
 	defer unsubscribe()
 
-	if err := s.Prompt("run local deterministic tool demo", sdk.PromptOptions{}); err != nil {
-		fmt.Printf("prompt error: %v\n", err)
+	if _, err := rt.StartSession(context.Background(), phi.StartSessionRequest{
+		Prompt: "run local deterministic bash demo",
+	}); err != nil {
+		fmt.Printf("start failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	finalPath := filepath.Join(repoRoot, demoPath)
-	data, err := os.ReadFile(finalPath)
+	select {
+	case ev := <-final:
+		if ev.AssistantMessage != nil {
+			fmt.Printf("[assistant_final] %s\n", extractText(ev.AssistantMessage.ContentRaw))
+		}
+	case <-time.After(10 * time.Second):
+		fmt.Println("timed out waiting for final response")
+		os.Exit(1)
+	}
+
+	data, err := os.ReadFile(demoPath)
 	if err != nil {
-		fmt.Printf("failed to read %s: %v\n", finalPath, err)
+		fmt.Printf("failed to read %s: %v\n", demoPath, err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("\nCreated: %s\n", finalPath)
+	fmt.Printf("\nCreated: %s\n", demoPath)
 	fmt.Printf("Final file contents:\n%s\n", string(data))
 }
 
-func deterministicHandler(path string) func(context.Context, model.Model, model.Context, provider.StreamOptions) (stream.EventStream, error) {
-	return func(ctx context.Context, m model.Model, conversation model.Context, options provider.StreamOptions) (stream.EventStream, error) {
-		switch toolResultCount(conversation.Messages) {
-		case 0:
-			return toolCallStream("call_write", "write", map[string]any{
-				"path": path,
-				"content": strings.Join([]string{
-					"package main",
-					"",
-					"import \"fmt\"",
-					"",
-					"func main() {",
-					"\tfmt.Println(\"hello from local go\")",
-					"}",
-					"",
-				}, "\n"),
-			}, m), nil
-		case 1:
-			return toolCallStream("call_read", "read", map[string]any{
-				"path": path,
-			}, m), nil
-		case 2:
-			return toolCallStream("call_edit", "edit", map[string]any{
-				"path":    path,
-				"oldText": "hello from local go",
-				"newText": "hello from edited local go",
-			}, m), nil
-		case 3:
-			return toolCallStream("call_bash", "bash", map[string]any{
-				"command": "go run ./tmp_local_demo/main.go",
-			}, m), nil
-		default:
-			return textStream("Local deterministic demo complete: write, read, edit, bash all executed.", m), nil
-		}
-	}
-}
-
-func toolResultCount(messages []model.Message) int {
-	count := 0
+func conversationHasToolResult(messages []model.Message) bool {
 	for _, message := range messages {
 		if message.Role == model.RoleToolResult {
-			count++
+			return true
 		}
 	}
-	return count
+	return false
+}
+
+func textStream(text string, m model.Model) stream.EventStream {
+	return &stream.MockStream{
+		Events: []stream.Event{
+			{Type: stream.EventStart},
+			{Type: stream.EventTextDelta, Delta: text},
+			{Type: stream.EventDone},
+		},
+		ResultValue: &model.AssistantMessage{
+			Role:       model.RoleAssistant,
+			ContentRaw: []any{model.TextContent{Type: model.ContentText, Text: text}},
+			Provider:   m.Provider,
+			Model:      m.ID,
+			StopReason: model.StopReasonStop,
+		},
+	}
 }
 
 func toolCallStream(callID, name string, args map[string]any, m model.Model) stream.EventStream {
@@ -142,23 +136,6 @@ func toolCallStream(callID, name string, args map[string]any, m model.Model) str
 	}
 }
 
-func textStream(text string, m model.Model) stream.EventStream {
-	return &stream.MockStream{
-		Events: []stream.Event{
-			{Type: stream.EventStart},
-			{Type: stream.EventTextDelta, Delta: text},
-			{Type: stream.EventDone},
-		},
-		ResultValue: &model.AssistantMessage{
-			Role:       model.RoleAssistant,
-			ContentRaw: []any{model.TextContent{Type: model.ContentText, Text: text}},
-			Provider:   m.Provider,
-			Model:      m.ID,
-			StopReason: model.StopReasonStop,
-		},
-	}
-}
-
 func repoRoot() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -174,19 +151,8 @@ func repoRoot() (string, error) {
 func extractText(content []any) string {
 	parts := []string{}
 	for _, item := range content {
-		switch v := item.(type) {
-		case model.TextContent:
-			if strings.TrimSpace(v.Text) != "" {
-				parts = append(parts, v.Text)
-			}
-		case map[string]any:
-			kind, _ := v["type"].(string)
-			if kind == string(model.ContentText) {
-				text, _ := v["text"].(string)
-				if strings.TrimSpace(text) != "" {
-					parts = append(parts, text)
-				}
-			}
+		if text, ok := item.(model.TextContent); ok && strings.TrimSpace(text.Text) != "" {
+			parts = append(parts, text.Text)
 		}
 	}
 	return strings.Join(parts, "\n")

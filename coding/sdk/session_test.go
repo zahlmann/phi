@@ -167,13 +167,9 @@ func TestSessionSteerAndFollowUpQueue(t *testing.T) {
 	s.Steer("be concise")
 	s.FollowUp("and include tests")
 
-	steer := s.agent.PendingSteer()
-	if len(steer) != 1 {
-		t.Fatalf("expected 1 steer message, got %d", len(steer))
-	}
-	follow := s.agent.PendingFollowUp()
-	if len(follow) != 1 {
-		t.Fatalf("expected 1 follow-up message, got %d", len(follow))
+	queued := s.agent.PendingQueue()
+	if len(queued) != 2 {
+		t.Fatalf("expected 2 queued messages, got %d", len(queued))
 	}
 }
 

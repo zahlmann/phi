@@ -1,27 +1,64 @@
 # phi
 
-`phi` is a minimal agent for use in programs.
+`phi` is a minimal Go SDK for running a coding agent loop with:
+- auto-generated sessions
+- queued user messages
+- bash-only tool execution
 
-It is based on [badlogic/pi-mono](https://github.com/badlogic/pi-mono/), then heavily stripped to SDK-only use and rewritten in Go by Codex.
+The public entrypoint is the root package:
 
-Implemented auth/provider modes:
-- OpenAI API (`openai_api_key`) via `OPENAI_API_KEY`
-- ChatGPT backend (`chatgpt`) via OAuth device login + bearer token
-
-## Test
-
-```bash
-go test ./...
+```go
+import "github.com/zahlmann/phi"
 ```
 
-## Examples
+## Features
 
-```bash
-go run ./coding/examples/minimal
-go run ./coding/examples/local
+- Session API:
+1. `StartSession(...)`
+2. `QueueMessage(...)`
+
+- Event API:
+1. `tool_call_started`
+2. `tool_call_finished`
+3. `final_message`
+
+- Auth modes:
+1. OpenAI API key (`openai_api_key`)
+2. ChatGPT backend (`chatgpt`)
+
+- Provider path:
+1. Responses API only
+
+- Session storage:
+1. in-memory only
+
+- Reasoning:
+1. fixed to `xhigh`
+
+## Quick Start
+
+```go
+rt := phi.NewRuntime(phi.RuntimeOptions{
+    AuthMode:     provider.AuthModeOpenAIAPIKey,
+    SystemPrompt: "You are a concise coding assistant.",
+    WorkingDir:   ".",
+})
+defer rt.Close()
+
+resp, err := rt.StartSession(ctx, phi.StartSessionRequest{
+    Prompt: "Use bash to list files, then summarize.",
+})
+if err != nil {
+    panic(err)
+}
+
+_ = rt.QueueMessage(ctx, phi.QueueMessageRequest{
+    SessionID: resp.SessionID,
+    Prompt:    "Now include hidden files too.",
+})
 ```
 
-## Auth Modes
+## Auth
 
 OpenAI API key mode (default):
 
@@ -30,56 +67,27 @@ export OPENAI_API_KEY="..."
 go run ./coding/examples/minimal
 ```
 
-`coding/examples/minimal` uses `gpt-5.2-codex` in this mode.
-
 ChatGPT backend mode:
 
 ```bash
 export PHI_AUTH_MODE=chatgpt
-export PHI_CHATGPT_LOGIN=1
 go run ./coding/examples/minimal
 ```
 
-`coding/examples/minimal` uses `gpt-5.3-codex` in this mode.
+`phi` supports ChatGPT credential flow in `ai/auth/openai` (interactive device login + token store).
 
-This uses the ChatGPT backend API (`https://chatgpt.com/backend-api/codex/responses`).
-Tokens are stored at `~/.phi/chatgpt_tokens.json` (override with `PHI_CHATGPT_TOKEN_PATH`).
-The interactive flow supports either device-code completion or manually pasting an access token.
+## Test
 
-Programmatic switch in `sdk.CreateSessionOptions`:
+If your environment blocks default Go cache writes, set `GOCACHE` to a writable path:
 
-```go
-authMode := provider.AuthModeOpenAIAPIKey // or provider.AuthModeChatGPT
-modelID := "gpt-5.2-codex"
-if authMode == provider.AuthModeChatGPT {
-    modelID = "gpt-5.3-codex"
-}
-
-opts := sdk.CreateSessionOptions{
-    ProviderClient: provider.NewOpenAIClient(),
-    Model:          &model.Model{Provider: "openai", ID: modelID},
-    AuthMode:       authMode,
-    AccessToken:    "...", // optional if stored in ~/.phi/chatgpt_tokens.json
-    AccountID:      "...", // optional
-    APIKey:         "...", // used for openai_api_key mode
-}
+```bash
+GOCACHE=/tmp/gocache go test ./...
 ```
 
-## Repo Layout
+## Examples
 
-```text
-phi
-├── agent/   # minimal agent loop + queue
-├── ai/      # model/provider/stream/auth layers
-├── coding/  # sdk runtime, sessions, tools, examples
-└── go.mod
-```
-
-## Mental Model
-
-```text
-your program
-    -> phi (sdk)
-        -> agent runtime
-            -> ai provider (OpenAI API or ChatGPT backend API)
+```bash
+go run ./coding/examples/minimal
+go run ./coding/examples/full
+go run ./coding/examples/local
 ```

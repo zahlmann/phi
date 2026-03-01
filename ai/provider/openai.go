@@ -52,7 +52,22 @@ func (c *OpenAIClient) Stream(
 	case AuthModeChatGPT:
 		return c.streamChatGPTBackend(ctx, m, conversation, options)
 	default:
-		return c.streamOpenAIAPI(ctx, m, conversation, options)
+		apiKey := strings.TrimSpace(options.APIKey)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+		}
+		if apiKey == "" {
+			return nil, errors.New("openai api key is required")
+		}
+
+		baseURL := strings.TrimRight(options.BaseURL, "/")
+		if baseURL == "" {
+			baseURL = strings.TrimRight(c.BaseURL, "/")
+		}
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		return c.streamOpenAIResponsesAPI(ctx, m, conversation, options, apiKey, baseURL)
 	}
 }
 

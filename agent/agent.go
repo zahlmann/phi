@@ -6,8 +6,7 @@ type Agent struct {
 	mu       sync.RWMutex
 	state    State
 	handlers []func(Event)
-	steerQ   []any
-	followQ  []any
+	pendingQ []any
 }
 
 func New(initial State) *Agent {
@@ -54,29 +53,54 @@ func (a *Agent) Prompt(message any) {
 }
 
 func (a *Agent) Steer(message any) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.steerQ = append(a.steerQ, message)
+	a.Queue(message)
 }
 
 func (a *Agent) FollowUp(message any) {
+	a.Queue(message)
+}
+
+func (a *Agent) Queue(message any) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.followQ = append(a.followQ, message)
+	a.pendingQ = append(a.pendingQ, message)
 }
 
 func (a *Agent) PendingSteer() []any {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	out := make([]any, len(a.steerQ))
-	copy(out, a.steerQ)
-	return out
+	return a.PendingQueue()
 }
 
 func (a *Agent) PendingFollowUp() []any {
+	return a.PendingQueue()
+}
+
+func (a *Agent) PendingQueue() []any {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := make([]any, len(a.followQ))
-	copy(out, a.followQ)
+	out := make([]any, len(a.pendingQ))
+	copy(out, a.pendingQ)
 	return out
+}
+
+func (a *Agent) PendingCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.pendingQ)
+}
+
+func (a *Agent) DequeuePending() (any, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.pendingQ) == 0 {
+		return nil, false
+	}
+	next := a.pendingQ[0]
+	a.pendingQ = a.pendingQ[1:]
+	return next, true
+}
+
+func (a *Agent) AddMessage(message any) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.state.Messages = append(a.state.Messages, message)
 }

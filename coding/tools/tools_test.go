@@ -14,10 +14,10 @@ func TestCodingToolsContainMinimalSet(t *testing.T) {
 	for _, tool := range toolset {
 		names[tool.Name()] = true
 	}
-	if len(toolset) != 4 {
-		t.Fatalf("expected exactly 4 tools, got %d", len(toolset))
+	if len(toolset) != 1 {
+		t.Fatalf("expected exactly 1 tool, got %d", len(toolset))
 	}
-	for _, required := range []string{"read", "write", "edit", "bash"} {
+	for _, required := range []string{"bash"} {
 		if !names[required] {
 			t.Fatalf("missing required tool: %s", required)
 		}
