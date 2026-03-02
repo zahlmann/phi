@@ -4,3 +4,4 @@ tmp_local_demo/
 .pi/
 benchmarks/
 scripts/
+uv.toml
