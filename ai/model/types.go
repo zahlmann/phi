@@ -35,11 +35,12 @@ type ToolCallContent struct {
 }
 
 type Message struct {
-	Role       Role   `json:"role"`
-	ContentRaw []any  `json:"content"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	Timestamp  int64  `json:"timestamp,omitempty"`
+	Role       Role           `json:"role"`
+	ContentRaw []any          `json:"content"`
+	ToolCallID string         `json:"toolCallId,omitempty"`
+	ToolName   string         `json:"toolName,omitempty"`
+	Details    map[string]any `json:"details,omitempty"`
+	Timestamp  int64          `json:"timestamp,omitempty"`
 }
 
 type Tool struct {

@@ -52,3 +52,23 @@ func run(ctx context.Context) error {
 ```bash
 GOCACHE=/tmp/gocache go test ./...
 ```
+
+## Go vs Python CLI Agent Run
+
+Use `phi` to run a more complex coding-agent task that builds a Go CLI and a Python CLI, executes both, benchmarks them, and writes a winner report with logs:
+
+```bash
+OPENAI_API_KEY=... scripts/run_phi_cli_compare.sh --iterations 1
+```
+
+Optional: choose an explicit human-readable trace log path:
+
+```bash
+OPENAI_API_KEY=... scripts/run_phi_cli_compare.sh --iterations 1 --human-log-path ./tmp_demo/phi_trace.log
+```
+
+Outputs are written under `benchmarks/results/<timestamp>_phi_cli_compare/`, including:
+- `results.csv` and `summary.txt`
+- per-run logs in `logs/`
+- per-run readable traces in `*.human.log` (or your `--human-log-path`)
+- generated workspace artifacts in `run_data/run_<n>/workspace/artifacts/`

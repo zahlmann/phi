@@ -11,6 +11,8 @@ import (
 	"github.com/zahlmann/phi/ai/stream"
 )
 
+const defaultMaxToolRounds = 24
+
 type RunnerOptions struct {
 	Client        provider.Client
 	AuthMode      provider.AuthMode
@@ -36,7 +38,7 @@ func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.Assi
 	}
 	maxRounds := options.MaxToolRounds
 	if maxRounds <= 0 {
-		maxRounds = 8
+		maxRounds = defaultMaxToolRounds
 	}
 
 	a.emit(Event{Type: EventTurnStart})
@@ -128,6 +130,9 @@ func executeToolCall(tools []Tool, call model.ToolCallContent, emit func(Event))
 			Role:       model.RoleToolResult,
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
+			Details: map[string]any{
+				"arguments": cloneMap(call.Arguments),
+			},
 			ContentRaw: []any{
 				model.TextContent{
 					Type: model.ContentText,
@@ -139,11 +144,19 @@ func executeToolCall(tools []Tool, call model.ToolCallContent, emit func(Event))
 	}
 
 	result, err := tool.Execute(call.ID, call.Arguments)
+	details := cloneMap(result.Details)
+	if len(call.Arguments) > 0 {
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["arguments"] = cloneMap(call.Arguments)
+	}
 	if err != nil {
 		return model.Message{
 			Role:       model.RoleToolResult,
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
+			Details:    details,
 			ContentRaw: []any{
 				model.TextContent{
 					Type: model.ContentText,
@@ -169,9 +182,21 @@ func executeToolCall(tools []Tool, call model.ToolCallContent, emit func(Event))
 		Role:       model.RoleToolResult,
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
+		Details:    details,
 		ContentRaw: content,
 		Timestamp:  time.Now().UnixMilli(),
 	}, false
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func findTool(tools []Tool, name string) Tool {

@@ -14,6 +14,7 @@ type CreateSessionOptions struct {
 	Model          *model.Model
 	ThinkingLevel  agent.ThinkingLevel
 	Tools          []agent.Tool
+	MaxToolRounds  int
 	ProviderClient provider.Client
 	AuthMode       provider.AuthMode
 	APIKey         string
@@ -28,6 +29,7 @@ type AgentSession struct {
 	apiKey         string
 	accessToken    string
 	accountID      string
+	maxToolRounds  int
 }
 
 func CreateAgentSession(options CreateSessionOptions) *AgentSession {
@@ -45,6 +47,7 @@ func CreateAgentSession(options CreateSessionOptions) *AgentSession {
 		apiKey:         options.APIKey,
 		accessToken:    options.AccessToken,
 		accountID:      options.AccountID,
+		maxToolRounds:  options.MaxToolRounds,
 	}
 }
 
@@ -91,11 +94,12 @@ func (s *AgentSession) processMessage(ctx context.Context, msg model.Message) (*
 	}
 
 	assistant, err := s.agent.RunTurn(ctx, agent.RunnerOptions{
-		Client:      s.providerClient,
-		AuthMode:    s.authMode,
-		APIKey:      s.apiKey,
-		AccessToken: s.accessToken,
-		AccountID:   s.accountID,
+		Client:        s.providerClient,
+		AuthMode:      s.authMode,
+		APIKey:        s.apiKey,
+		AccessToken:   s.accessToken,
+		AccountID:     s.accountID,
+		MaxToolRounds: s.maxToolRounds,
 	})
 	return assistant, err
 }
