@@ -14,7 +14,6 @@ const (
 	ContentText     ContentType = "text"
 	ContentToolCall ContentType = "toolCall"
 	ContentImage    ContentType = "image"
-	ContentThinking ContentType = "thinking"
 )
 
 type TextContent struct {
@@ -33,11 +32,6 @@ type ToolCallContent struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
-}
-
-type ThinkingContent struct {
-	Type     ContentType `json:"type"`
-	Thinking string      `json:"thinking"`
 }
 
 type Message struct {
@@ -61,12 +55,8 @@ type Context struct {
 }
 
 type Model struct {
-	Provider      string `json:"provider"`
-	ID            string `json:"id"`
-	Name          string `json:"name,omitempty"`
-	ContextWindow int    `json:"contextWindow,omitempty"`
-	MaxTokens     int    `json:"maxTokens,omitempty"`
-	Reasoning     bool   `json:"reasoning"`
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
 }
 
 type Usage struct {
@@ -83,7 +73,6 @@ const (
 	StopReasonLength  StopReason = "length"
 	StopReasonToolUse StopReason = "toolUse"
 	StopReasonError   StopReason = "error"
-	StopReasonAborted StopReason = "aborted"
 )
 
 type AssistantMessage struct {

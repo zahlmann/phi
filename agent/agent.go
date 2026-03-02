@@ -1,12 +1,68 @@
 package agent
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/zahlmann/phi/ai/model"
+)
+
+type ThinkingLevel string
+
+const (
+	ThinkingNone    ThinkingLevel = "none"
+	ThinkingMinimal ThinkingLevel = "minimal"
+	ThinkingLow     ThinkingLevel = "low"
+	ThinkingMedium  ThinkingLevel = "medium"
+	ThinkingHigh    ThinkingLevel = "high"
+	ThinkingXHigh   ThinkingLevel = "xhigh"
+)
+
+type EventType string
+
+const (
+	EventTurnStart          EventType = "turn_start"
+	EventTurnEnd            EventType = "turn_end"
+	EventMessageStart       EventType = "message_start"
+	EventMessageUpdate      EventType = "message_update"
+	EventMessageEnd         EventType = "message_end"
+	EventToolExecutionStart EventType = "tool_execution_start"
+	EventToolExecutionEnd   EventType = "tool_execution_end"
+)
+
+type Event struct {
+	Type       EventType `json:"type"`
+	Message    any       `json:"message,omitempty"`
+	ToolName   string    `json:"toolName,omitempty"`
+	ToolCallID string    `json:"toolCallId,omitempty"`
+	IsError    bool      `json:"isError,omitempty"`
+}
+
+type ToolResult struct {
+	Content []model.TextContent `json:"content"`
+	Details map[string]any      `json:"details,omitempty"`
+}
+
+type Tool interface {
+	Name() string
+	Description() string
+	Parameters() map[string]any
+	Execute(toolCallID string, args map[string]any) (ToolResult, error)
+}
+
+type State struct {
+	SystemPrompt string        `json:"systemPrompt"`
+	Model        *model.Model  `json:"model,omitempty"`
+	Thinking     ThinkingLevel `json:"thinkingLevel"`
+	Messages     []any         `json:"messages"`
+	IsStreaming  bool          `json:"isStreaming"`
+	Tools        []Tool        `json:"-"`
+}
 
 type Agent struct {
 	mu       sync.RWMutex
 	state    State
 	handlers []func(Event)
-	pendingQ []any
+	pendingQ []model.Message
 }
 
 func New(initial State) *Agent {
@@ -52,34 +108,10 @@ func (a *Agent) Prompt(message any) {
 	a.emit(Event{Type: EventMessageEnd, Message: message})
 }
 
-func (a *Agent) Steer(message any) {
-	a.Queue(message)
-}
-
-func (a *Agent) FollowUp(message any) {
-	a.Queue(message)
-}
-
-func (a *Agent) Queue(message any) {
+func (a *Agent) Queue(message model.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pendingQ = append(a.pendingQ, message)
-}
-
-func (a *Agent) PendingSteer() []any {
-	return a.PendingQueue()
-}
-
-func (a *Agent) PendingFollowUp() []any {
-	return a.PendingQueue()
-}
-
-func (a *Agent) PendingQueue() []any {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	out := make([]any, len(a.pendingQ))
-	copy(out, a.pendingQ)
-	return out
 }
 
 func (a *Agent) PendingCount() int {
@@ -88,11 +120,11 @@ func (a *Agent) PendingCount() int {
 	return len(a.pendingQ)
 }
 
-func (a *Agent) DequeuePending() (any, bool) {
+func (a *Agent) DequeuePending() (model.Message, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if len(a.pendingQ) == 0 {
-		return nil, false
+		return model.Message{}, false
 	}
 	next := a.pendingQ[0]
 	a.pendingQ = a.pendingQ[1:]

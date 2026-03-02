@@ -2,26 +2,18 @@ package sdk
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"github.com/zahlmann/phi/agent"
 	"github.com/zahlmann/phi/ai/model"
 	"github.com/zahlmann/phi/ai/provider"
-	"github.com/zahlmann/phi/coding/session"
 )
-
-type PromptOptions struct {
-	Images            []model.ImageContent
-	StreamingBehavior string
-}
 
 type CreateSessionOptions struct {
 	SystemPrompt   string
 	Model          *model.Model
 	ThinkingLevel  agent.ThinkingLevel
 	Tools          []agent.Tool
-	SessionManager session.Manager
 	ProviderClient provider.Client
 	AuthMode       provider.AuthMode
 	APIKey         string
@@ -31,7 +23,6 @@ type CreateSessionOptions struct {
 
 type AgentSession struct {
 	agent          *agent.Agent
-	manager        session.Manager
 	providerClient provider.Client
 	authMode       provider.AuthMode
 	apiKey         string
@@ -40,46 +31,15 @@ type AgentSession struct {
 }
 
 func CreateAgentSession(options CreateSessionOptions) *AgentSession {
-	manager := options.SessionManager
-	if manager == nil {
-		manager = session.NewInMemoryManager("session")
-	}
-	rawEntries, thinking, modelProvider, modelID := manager.BuildContext()
-	messages, parsedThinking, parsedProvider, parsedModelID := extractContext(rawEntries)
-	if strings.TrimSpace(parsedThinking) != "" {
-		thinking = parsedThinking
-	}
-	if strings.TrimSpace(parsedProvider) != "" {
-		modelProvider = parsedProvider
-	}
-	if strings.TrimSpace(parsedModelID) != "" {
-		modelID = parsedModelID
-	}
-
-	initialThinking := options.ThinkingLevel
-	if parsed := parseThinkingLevel(thinking); parsed != "" {
-		initialThinking = parsed
-	}
-	initialModel := options.Model
-	if initialModel == nil && (strings.TrimSpace(modelProvider) != "" || strings.TrimSpace(modelID) != "") {
-		initialModel = &model.Model{
-			Provider: strings.TrimSpace(modelProvider),
-			ID:       strings.TrimSpace(modelID),
-		}
-	}
-	if initialModel == nil {
-		initialModel = options.Model
-	}
 	initial := agent.State{
 		SystemPrompt: options.SystemPrompt,
-		Model:        initialModel,
-		Thinking:     initialThinking,
-		Messages:     append([]any{}, messages...),
+		Model:        options.Model,
+		Thinking:     options.ThinkingLevel,
+		Messages:     []any{},
 		Tools:        options.Tools,
 	}
 	return &AgentSession{
 		agent:          agent.New(initial),
-		manager:        manager,
 		providerClient: options.ProviderClient,
 		authMode:       options.AuthMode,
 		apiKey:         options.APIKey,
@@ -88,12 +48,12 @@ func CreateAgentSession(options CreateSessionOptions) *AgentSession {
 	}
 }
 
-func (s *AgentSession) Prompt(text string, options PromptOptions) error {
-	msg := userMessage(text, options.Images)
+func (s *AgentSession) Prompt(text string, images []model.ImageContent) error {
 	if s.agent.State().IsStreaming {
-		s.agent.Queue(msg)
+		s.QueueMessage(text, images)
 		return nil
 	}
+	msg := userMessage(text, images)
 	_, err := s.processMessage(context.Background(), msg)
 	return err
 }
@@ -102,11 +62,11 @@ func (s *AgentSession) QueueMessage(text string, images []model.ImageContent) {
 	s.agent.Queue(userMessage(text, images))
 }
 
-func (s *AgentSession) QueueRawMessage(message any) {
+func (s *AgentSession) Queue(message model.Message) {
 	s.agent.Queue(message)
 }
 
-func (s *AgentSession) PopQueuedMessage() (any, bool) {
+func (s *AgentSession) PopQueuedMessage() (model.Message, bool) {
 	return s.agent.DequeuePending()
 }
 
@@ -114,61 +74,30 @@ func (s *AgentSession) PendingCount() int {
 	return s.agent.PendingCount()
 }
 
-func (s *AgentSession) ProcessQueuedMessage(ctx context.Context, queued any) (*model.AssistantMessage, error) {
-	if queued == nil {
-		return nil, errors.New("queued message is nil")
-	}
-	msg, ok := queued.(model.Message)
-	if !ok {
-		return nil, errors.New("queued message must be a model.Message")
-	}
-	return s.processMessage(ctx, msg)
+func (s *AgentSession) ProcessQueuedMessage(ctx context.Context, queued model.Message) (*model.AssistantMessage, error) {
+	return s.processMessage(ctx, queued)
 }
 
 func (s *AgentSession) AppendAssistantMessage(message model.AssistantMessage) error {
 	s.agent.AddMessage(message)
-	_, err := s.manager.AppendMessage(message)
-	return err
+	return nil
 }
 
 func (s *AgentSession) processMessage(ctx context.Context, msg model.Message) (*model.AssistantMessage, error) {
 	s.agent.Prompt(msg)
-	if _, err := s.manager.AppendMessage(msg); err != nil {
-		return nil, err
-	}
 
 	if s.providerClient == nil {
 		return nil, nil
 	}
 
-	beforeCount := len(s.agent.State().Messages)
 	assistant, err := s.agent.RunTurn(ctx, agent.RunnerOptions{
 		Client:      s.providerClient,
 		AuthMode:    s.authMode,
 		APIKey:      s.apiKey,
 		AccessToken: s.accessToken,
 		AccountID:   s.accountID,
-		SessionID:   s.manager.SessionID(),
 	})
-	if err != nil {
-		return assistant, err
-	}
-
-	after := s.agent.State().Messages
-	for i := beforeCount; i < len(after); i++ {
-		if _, err := s.manager.AppendMessage(after[i]); err != nil {
-			return assistant, err
-		}
-	}
-	return assistant, nil
-}
-
-func (s *AgentSession) Steer(text string) {
-	s.agent.Queue(userMessage(text, nil))
-}
-
-func (s *AgentSession) FollowUp(text string) {
-	s.agent.Queue(userMessage(text, nil))
+	return assistant, err
 }
 
 func (s *AgentSession) Subscribe(handler func(agent.Event)) (unsubscribe func()) {
@@ -194,71 +123,4 @@ func userMessage(text string, images []model.ImageContent) model.Message {
 		Role:       model.RoleUser,
 		ContentRaw: content,
 	}
-}
-
-func parseThinkingLevel(raw string) agent.ThinkingLevel {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case string(agent.ThinkingNone):
-		return agent.ThinkingNone
-	case string(agent.ThinkingMinimal):
-		return agent.ThinkingMinimal
-	case string(agent.ThinkingLow):
-		return agent.ThinkingLow
-	case string(agent.ThinkingMedium):
-		return agent.ThinkingMedium
-	case string(agent.ThinkingHigh):
-		return agent.ThinkingHigh
-	case string(agent.ThinkingXHigh):
-		return agent.ThinkingXHigh
-	default:
-		return ""
-	}
-}
-
-func extractContext(entries []any) (messages []any, thinkingLevel string, modelProvider string, modelID string) {
-	messages = []any{}
-	thinkingLevel = ""
-	modelProvider = ""
-	modelID = ""
-
-	for _, item := range entries {
-		switch v := item.(type) {
-		case model.Message:
-			messages = append(messages, v)
-		case model.AssistantMessage:
-			messages = append(messages, v)
-		case session.MessageEntry:
-			if v.Message != nil {
-				messages = append(messages, v.Message)
-			}
-		case session.ThinkingLevelChangeEntry:
-			if strings.TrimSpace(v.ThinkingLevel) != "" {
-				thinkingLevel = v.ThinkingLevel
-			}
-		case session.ModelChangeEntry:
-			modelProvider = strings.TrimSpace(v.Provider)
-			modelID = strings.TrimSpace(v.ModelID)
-		case map[string]any:
-			entryType, _ := v["type"].(string)
-			switch entryType {
-			case "message":
-				if msg, ok := v["message"]; ok && msg != nil {
-					messages = append(messages, msg)
-				}
-			case "thinking_level_change":
-				if level, ok := v["thinkingLevel"].(string); ok && strings.TrimSpace(level) != "" {
-					thinkingLevel = level
-				}
-			case "model_change":
-				if providerRaw, ok := v["provider"].(string); ok {
-					modelProvider = strings.TrimSpace(providerRaw)
-				}
-				if modelRaw, ok := v["modelId"].(string); ok {
-					modelID = strings.TrimSpace(modelRaw)
-				}
-			}
-		}
-	}
-
-	return messages, thinkingLevel, modelProvider, modelID
 }

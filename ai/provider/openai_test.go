@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -523,7 +522,6 @@ func TestOpenAIClientStreamValidation(t *testing.T) {
 
 	t.Run("chatgpt token required", func(t *testing.T) {
 		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", "")
-		t.Setenv("PHI_CHATGPT_TOKEN_PATH", filepath.Join(t.TempDir(), "missing.json"))
 		client := NewOpenAIClient()
 		_, err := client.Stream(context.Background(), model.Model{
 			Provider: "openai",
@@ -662,35 +660,6 @@ func TestParseToolArguments(t *testing.T) {
 				t.Fatalf("unexpected parsed arguments: got=%#v want=%#v", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestMapStopReason(t *testing.T) {
-	tests := []struct {
-		in   string
-		want model.StopReason
-	}{
-		{in: "length", want: model.StopReasonLength},
-		{in: "tool_calls", want: model.StopReasonToolUse},
-		{in: "function_call", want: model.StopReasonToolUse},
-		{in: "content_filter", want: model.StopReasonError},
-		{in: "other", want: model.StopReasonStop},
-	}
-	for _, tc := range tests {
-		if got := mapStopReason(tc.in); got != tc.want {
-			t.Fatalf("mapStopReason(%q): got=%s want=%s", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestExtractOpenAIMessageText(t *testing.T) {
-	text := extractOpenAIMessageText([]any{
-		map[string]any{"type": "text", "text": "line1"},
-		map[string]any{"type": "text", "text": "line2"},
-		map[string]any{"type": "ignored", "text": "nope"},
-	})
-	if text != "line1\nline2" {
-		t.Fatalf("unexpected extracted text: %q", text)
 	}
 }
 

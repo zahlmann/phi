@@ -13,14 +13,12 @@ import (
 )
 
 func TestSessionPromptWithoutProviderAppendsUserMessage(t *testing.T) {
-	manager := &recordingManager{id: "s1"}
 	s := CreateAgentSession(CreateSessionOptions{
-		SystemPrompt:   "help",
-		ThinkingLevel:  agent.ThinkingNone,
-		SessionManager: manager,
+		SystemPrompt:  "help",
+		ThinkingLevel: agent.ThinkingNone,
 	})
 
-	if err := s.Prompt("hello", PromptOptions{}); err != nil {
+	if err := s.Prompt("hello", nil); err != nil {
 		t.Fatalf("prompt failed: %v", err)
 	}
 
@@ -28,15 +26,11 @@ func TestSessionPromptWithoutProviderAppendsUserMessage(t *testing.T) {
 	if len(state.Messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(state.Messages))
 	}
-	if len(manager.appended) != 1 {
-		t.Fatalf("expected 1 persisted message, got %d", len(manager.appended))
-	}
 }
 
 func TestSessionPromptIncludesImages(t *testing.T) {
-	manager := &recordingManager{id: "s1"}
 	s := CreateAgentSession(CreateSessionOptions{
-		SessionManager: manager,
+		SystemPrompt: "help",
 	})
 
 	image := model.ImageContent{
@@ -44,7 +38,7 @@ func TestSessionPromptIncludesImages(t *testing.T) {
 		MIMEType: "image/png",
 		Data:     "abc",
 	}
-	if err := s.Prompt("hello", PromptOptions{Images: []model.ImageContent{image}}); err != nil {
+	if err := s.Prompt("hello", []model.ImageContent{image}); err != nil {
 		t.Fatalf("prompt failed: %v", err)
 	}
 
@@ -58,7 +52,6 @@ func TestSessionPromptIncludesImages(t *testing.T) {
 }
 
 func TestSessionPromptRunsProviderTurnAndPersistsAssistantMessages(t *testing.T) {
-	manager := &recordingManager{id: "s1"}
 	client := provider.MockClient{
 		Handler: func(ctx context.Context, m model.Model, conversation model.Context, options provider.StreamOptions) (stream.EventStream, error) {
 			return textStream("ok", m), nil
@@ -69,27 +62,22 @@ func TestSessionPromptRunsProviderTurnAndPersistsAssistantMessages(t *testing.T)
 		SystemPrompt:   "help",
 		Model:          &model.Model{Provider: "mock", ID: "m1"},
 		ThinkingLevel:  agent.ThinkingNone,
-		SessionManager: manager,
 		ProviderClient: client,
 	})
 
-	if err := s.Prompt("hello", PromptOptions{}); err != nil {
+	if err := s.Prompt("hello", nil); err != nil {
 		t.Fatalf("prompt failed: %v", err)
 	}
 	state := s.State()
 	if len(state.Messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(state.Messages))
 	}
-	if len(manager.appended) != 2 {
-		t.Fatalf("expected 2 persisted messages, got %d", len(manager.appended))
-	}
-	if _, ok := manager.appended[1].(model.AssistantMessage); !ok {
-		t.Fatalf("expected assistant message to be persisted, got %T", manager.appended[1])
+	if _, ok := state.Messages[1].(model.AssistantMessage); !ok {
+		t.Fatalf("expected assistant message, got %T", state.Messages[1])
 	}
 }
 
 func TestSessionPromptExecutesTools(t *testing.T) {
-	manager := &recordingManager{id: "s2"}
 	tool := &testWriteTool{}
 	client := provider.MockClient{
 		Handler: func(ctx context.Context, m model.Model, conversation model.Context, options provider.StreamOptions) (stream.EventStream, error) {
@@ -108,10 +96,9 @@ func TestSessionPromptExecutesTools(t *testing.T) {
 		Model:          &model.Model{Provider: "mock", ID: "m1"},
 		ThinkingLevel:  agent.ThinkingNone,
 		Tools:          []agent.Tool{tool},
-		SessionManager: manager,
 		ProviderClient: client,
 	})
-	if err := s.Prompt("hello", PromptOptions{}); err != nil {
+	if err := s.Prompt("hello", nil); err != nil {
 		t.Fatalf("prompt failed: %v", err)
 	}
 	if tool.calls != 1 {
@@ -121,25 +108,10 @@ func TestSessionPromptExecutesTools(t *testing.T) {
 	if len(state.Messages) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(state.Messages))
 	}
-	if len(manager.appended) != 4 {
-		t.Fatalf("expected all 4 messages to be persisted, got %d", len(manager.appended))
-	}
 }
 
 func TestSessionPromptErrorPaths(t *testing.T) {
-	t.Run("manager append error", func(t *testing.T) {
-		manager := &recordingManager{id: "s1", appendErr: errors.New("persist failed")}
-		s := CreateAgentSession(CreateSessionOptions{
-			SessionManager: manager,
-		})
-		err := s.Prompt("hello", PromptOptions{})
-		if err == nil || !strings.Contains(err.Error(), "persist failed") {
-			t.Fatalf("expected manager error, got %v", err)
-		}
-	})
-
 	t.Run("provider error", func(t *testing.T) {
-		manager := &recordingManager{id: "s1"}
 		client := provider.MockClient{
 			Handler: func(context.Context, model.Model, model.Context, provider.StreamOptions) (stream.EventStream, error) {
 				return nil, errors.New("provider failed")
@@ -147,38 +119,43 @@ func TestSessionPromptErrorPaths(t *testing.T) {
 		}
 		s := CreateAgentSession(CreateSessionOptions{
 			Model:          &model.Model{Provider: "mock", ID: "m1"},
-			SessionManager: manager,
 			ProviderClient: client,
 		})
-		err := s.Prompt("hello", PromptOptions{})
+		err := s.Prompt("hello", nil)
 		if err == nil || !strings.Contains(err.Error(), "provider failed") {
 			t.Fatalf("expected provider error, got %v", err)
 		}
-		if len(manager.appended) != 1 {
-			t.Fatalf("expected user message to be persisted before provider failure, got %d", len(manager.appended))
+		if len(s.State().Messages) != 1 {
+			t.Fatalf("expected only the user message on provider failure, got %d", len(s.State().Messages))
 		}
 	})
 }
 
-func TestSessionSteerAndFollowUpQueue(t *testing.T) {
-	s := CreateAgentSession(CreateSessionOptions{
-		SessionManager: &recordingManager{id: "s1"},
-	})
-	s.Steer("be concise")
-	s.FollowUp("and include tests")
+func TestSessionQueueMessageAppendsToPendingQueue(t *testing.T) {
+	s := CreateAgentSession(CreateSessionOptions{})
+	s.QueueMessage("be concise", nil)
+	s.QueueMessage("and include tests", nil)
 
-	queued := s.agent.PendingQueue()
-	if len(queued) != 2 {
-		t.Fatalf("expected 2 queued messages, got %d", len(queued))
+	if got := s.PendingCount(); got != 2 {
+		t.Fatalf("expected 2 queued messages, got %d", got)
 	}
 }
 
-func TestParseThinkingLevel(t *testing.T) {
-	if got := parseThinkingLevel("none"); got != agent.ThinkingNone {
-		t.Fatalf("expected none, got %q", got)
+func TestAppendAssistantMessage(t *testing.T) {
+	s := CreateAgentSession(CreateSessionOptions{})
+	assistant := model.AssistantMessage{
+		Role:       model.RoleAssistant,
+		ContentRaw: []any{model.TextContent{Type: model.ContentText, Text: "ok"}},
 	}
-	if got := parseThinkingLevel("bogus"); got != "" {
-		t.Fatalf("expected unknown level to be unsupported, got %q", got)
+	if err := s.AppendAssistantMessage(assistant); err != nil {
+		t.Fatalf("append assistant failed: %v", err)
+	}
+	state := s.State()
+	if len(state.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(state.Messages))
+	}
+	if _, ok := state.Messages[0].(model.AssistantMessage); !ok {
+		t.Fatalf("expected assistant message, got %T", state.Messages[0])
 	}
 }
 
@@ -207,48 +184,14 @@ func (t *testWriteTool) Execute(toolCallID string, args map[string]any) (agent.T
 	}, nil
 }
 
-type recordingManager struct {
-	id        string
-	appended  []any
-	appendErr error
-}
-
-func (m *recordingManager) SessionID() string {
-	return m.id
-}
-
-func (m *recordingManager) SessionFile() string {
-	return ""
-}
-
-func (m *recordingManager) AppendMessage(message any) (string, error) {
-	if m.appendErr != nil {
-		return "", m.appendErr
-	}
-	m.appended = append(m.appended, message)
-	return "entry", nil
-}
-
-func (m *recordingManager) AppendModelChange(provider, modelID string) (string, error) {
-	return "model", nil
-}
-
-func (m *recordingManager) AppendThinkingLevelChange(level string) (string, error) {
-	return "thinking", nil
-}
-
-func (m *recordingManager) BuildContext() ([]any, string, string, string) {
-	return append([]any{}, m.appended...), "none", "", ""
-}
-
 func textStream(text string, m model.Model) stream.EventStream {
-	return &stream.MockStream{
+	return &stream.StaticEventStream{
 		Events: []stream.Event{
 			{Type: stream.EventStart},
 			{Type: stream.EventTextDelta, Delta: text},
 			{Type: stream.EventDone},
 		},
-		ResultValue: &model.AssistantMessage{
+		ResultMsg: &model.AssistantMessage{
 			Role:       model.RoleAssistant,
 			ContentRaw: []any{model.TextContent{Type: model.ContentText, Text: text}},
 			Provider:   m.Provider,
@@ -259,13 +202,13 @@ func textStream(text string, m model.Model) stream.EventStream {
 }
 
 func toolCallStream(callID, name string, args map[string]any, m model.Model) stream.EventStream {
-	return &stream.MockStream{
+	return &stream.StaticEventStream{
 		Events: []stream.Event{
 			{Type: stream.EventStart},
 			{Type: stream.EventToolCall, ToolName: name, ToolCallID: callID, Arguments: args},
 			{Type: stream.EventDone},
 		},
-		ResultValue: &model.AssistantMessage{
+		ResultMsg: &model.AssistantMessage{
 			Role: model.RoleAssistant,
 			ContentRaw: []any{
 				model.ToolCallContent{

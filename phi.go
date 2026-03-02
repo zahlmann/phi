@@ -12,9 +12,8 @@ import (
 	"github.com/zahlmann/phi/agent"
 	"github.com/zahlmann/phi/ai/model"
 	"github.com/zahlmann/phi/ai/provider"
+	bashtool "github.com/zahlmann/phi/coding/bash"
 	"github.com/zahlmann/phi/coding/sdk"
-	"github.com/zahlmann/phi/coding/session"
-	"github.com/zahlmann/phi/coding/tools"
 )
 
 const defaultQueueCapacity = 256
@@ -202,8 +201,7 @@ func (r *Runtime) newSession(sessionID string) *sessionRuntime {
 		SystemPrompt:   r.systemPrompt,
 		Model:          &model.Model{Provider: "openai", ID: r.modelID},
 		ThinkingLevel:  agent.ThinkingXHigh,
-		Tools:          tools.NewCodingTools(r.workingDir),
-		SessionManager: session.NewInMemoryManager(sessionID),
+		Tools:          []agent.Tool{bashtool.NewTool(r.workingDir, 0)},
 		ProviderClient: r.client,
 		AuthMode:       r.authMode,
 		APIKey:         r.apiKey,
@@ -216,28 +214,7 @@ func (r *Runtime) newSession(sessionID string) *sessionRuntime {
 		runtime: r,
 	}
 	handle.unsubscribe = agentSession.Subscribe(func(event agent.Event) {
-		switch event.Type {
-		case agent.EventToolExecutionStart:
-			r.emit(Event{
-				Type:       EventToolCallStarted,
-				SessionID:  sessionID,
-				ToolName:   event.ToolName,
-				ToolCallID: event.ToolCallID,
-			})
-		case agent.EventToolExecutionEnd:
-			out := Event{
-				Type:       EventToolCallFinished,
-				SessionID:  sessionID,
-				ToolName:   event.ToolName,
-				ToolCallID: event.ToolCallID,
-				IsError:    event.IsError,
-			}
-			if toolResult, ok := event.Message.(model.Message); ok {
-				toolCopy := toolResult
-				out.ToolResult = &toolCopy
-			}
-			r.emit(out)
-		}
+		r.forwardAgentEvent(sessionID, event)
 	})
 	return handle
 }
@@ -270,11 +247,36 @@ func (r *Runtime) emit(event Event) {
 	}
 }
 
+func (r *Runtime) forwardAgentEvent(sessionID string, event agent.Event) {
+	switch event.Type {
+	case agent.EventToolExecutionStart:
+		r.emit(Event{
+			Type:       EventToolCallStarted,
+			SessionID:  sessionID,
+			ToolName:   event.ToolName,
+			ToolCallID: event.ToolCallID,
+		})
+	case agent.EventToolExecutionEnd:
+		out := Event{
+			Type:       EventToolCallFinished,
+			SessionID:  sessionID,
+			ToolName:   event.ToolName,
+			ToolCallID: event.ToolCallID,
+			IsError:    event.IsError,
+		}
+		if toolResult, ok := event.Message.(model.Message); ok {
+			toolCopy := toolResult
+			out.ToolResult = &toolCopy
+		}
+		r.emit(out)
+	}
+}
+
 func (s *sessionRuntime) enqueue(message model.Message) error {
 	if s.session.PendingCount() >= s.runtime.queueCap {
 		return errors.New("session queue is full")
 	}
-	s.session.QueueRawMessage(message)
+	s.session.Queue(message)
 	s.triggerDrain()
 	return nil
 }
@@ -291,16 +293,9 @@ func (s *sessionRuntime) triggerDrain() {
 
 func (s *sessionRuntime) drain() {
 	for {
-		queued, ok := s.session.PopQueuedMessage()
+		queued, ok := s.nextQueuedMessage()
 		if !ok {
-			s.mu.Lock()
-			queued, ok = s.session.PopQueuedMessage()
-			if !ok {
-				s.processing = false
-				s.mu.Unlock()
-				return
-			}
-			s.mu.Unlock()
+			return
 		}
 
 		assistant, err := s.session.ProcessQueuedMessage(context.Background(), queued)
@@ -324,6 +319,22 @@ func (s *sessionRuntime) drain() {
 			})
 		}
 	}
+}
+
+func (s *sessionRuntime) nextQueuedMessage() (model.Message, bool) {
+	queued, ok := s.session.PopQueuedMessage()
+	if ok {
+		return queued, true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queued, ok = s.session.PopQueuedMessage()
+	if !ok {
+		s.processing = false
+		return model.Message{}, false
+	}
+	return queued, true
 }
 
 func assistantErrorMessage(state agent.State, err error) model.AssistantMessage {

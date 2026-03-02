@@ -152,13 +152,13 @@ func TestRuntimeUsesXHighReasoningEffort(t *testing.T) {
 }
 
 func staticTextStream(text string, m model.Model) stream.EventStream {
-	return &stream.MockStream{
+	return &stream.StaticEventStream{
 		Events: []stream.Event{
 			{Type: stream.EventStart},
 			{Type: stream.EventTextDelta, Delta: text},
 			{Type: stream.EventDone},
 		},
-		ResultValue: &model.AssistantMessage{
+		ResultMsg: &model.AssistantMessage{
 			Role:       model.RoleAssistant,
 			ContentRaw: []any{model.TextContent{Type: model.ContentText, Text: text}},
 			Provider:   m.Provider,
@@ -169,13 +169,13 @@ func staticTextStream(text string, m model.Model) stream.EventStream {
 }
 
 func staticToolCallStream(callID, name string, args map[string]any, m model.Model) stream.EventStream {
-	return &stream.MockStream{
+	return &stream.StaticEventStream{
 		Events: []stream.Event{
 			{Type: stream.EventStart},
 			{Type: stream.EventToolCall, ToolName: name, ToolCallID: callID, Arguments: args},
 			{Type: stream.EventDone},
 		},
-		ResultValue: &model.AssistantMessage{
+		ResultMsg: &model.AssistantMessage{
 			Role: model.RoleAssistant,
 			ContentRaw: []any{
 				model.ToolCallContent{

@@ -17,7 +17,6 @@ type RunnerOptions struct {
 	APIKey        string
 	AccessToken   string
 	AccountID     string
-	SessionID     string
 	Tools         []Tool
 	MaxToolRounds int
 }
@@ -57,7 +56,6 @@ func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.Assi
 			APIKey:          options.APIKey,
 			AccessToken:     options.AccessToken,
 			AccountID:       options.AccountID,
-			SessionID:       options.SessionID,
 			ReasoningEffort: string(state.Thinking),
 		})
 		if err != nil {

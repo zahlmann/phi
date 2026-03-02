@@ -50,8 +50,7 @@ func TestRunTurnAppendsAssistantMessage(t *testing.T) {
 	}
 
 	assistant, err := a.RunTurn(context.Background(), RunnerOptions{
-		Client:    client,
-		SessionID: "s1",
+		Client: client,
 	})
 	if err != nil {
 		t.Fatalf("run turn failed: %v", err)
@@ -84,10 +83,7 @@ func TestRunTurnForwardsReasoningEffort(t *testing.T) {
 		},
 	}
 
-	if _, err := a.RunTurn(context.Background(), RunnerOptions{
-		Client:    client,
-		SessionID: "s_reasoning",
-	}); err != nil {
+	if _, err := a.RunTurn(context.Background(), RunnerOptions{Client: client}); err != nil {
 		t.Fatalf("run turn failed: %v", err)
 	}
 }
@@ -108,8 +104,7 @@ func TestRunTurnExecutesToolCalls(t *testing.T) {
 	}
 
 	assistant, err := a.RunTurn(context.Background(), RunnerOptions{
-		Client:    client,
-		SessionID: "s2",
+		Client: client,
 	})
 	if err != nil {
 		t.Fatalf("run turn failed: %v", err)
@@ -163,7 +158,7 @@ func TestRunTurnToolErrorsBecomeToolResultMessages(t *testing.T) {
 				},
 			}
 
-			if _, err := a.RunTurn(context.Background(), RunnerOptions{Client: client, SessionID: "s3"}); err != nil {
+			if _, err := a.RunTurn(context.Background(), RunnerOptions{Client: client}); err != nil {
 				t.Fatalf("run turn failed: %v", err)
 			}
 
@@ -197,7 +192,6 @@ func TestRunTurnReturnsErrorWhenToolRoundsExhausted(t *testing.T) {
 
 	assistant, err := a.RunTurn(context.Background(), RunnerOptions{
 		Client:        client,
-		SessionID:     "s4",
 		MaxToolRounds: 2,
 	})
 	if err == nil || !strings.Contains(err.Error(), "max tool rounds reached") {
@@ -304,13 +298,13 @@ func newTestAgent(tools []Tool) *Agent {
 }
 
 func textStream(text string, m model.Model) stream.EventStream {
-	return &stream.MockStream{
+	return &stream.StaticEventStream{
 		Events: []stream.Event{
 			{Type: stream.EventStart},
 			{Type: stream.EventTextDelta, Delta: text},
 			{Type: stream.EventDone},
 		},
-		ResultValue: &model.AssistantMessage{
+		ResultMsg: &model.AssistantMessage{
 			Role:       model.RoleAssistant,
 			ContentRaw: []any{model.TextContent{Type: model.ContentText, Text: text}},
 			Provider:   m.Provider,
@@ -321,13 +315,13 @@ func textStream(text string, m model.Model) stream.EventStream {
 }
 
 func toolCallStream(callID, name string, args map[string]any, m model.Model) stream.EventStream {
-	return &stream.MockStream{
+	return &stream.StaticEventStream{
 		Events: []stream.Event{
 			{Type: stream.EventStart},
 			{Type: stream.EventToolCall, ToolName: name, ToolCallID: callID, Arguments: args},
 			{Type: stream.EventDone},
 		},
-		ResultValue: &model.AssistantMessage{
+		ResultMsg: &model.AssistantMessage{
 			Role: model.RoleAssistant,
 			ContentRaw: []any{
 				model.ToolCallContent{
