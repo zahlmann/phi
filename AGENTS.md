@@ -86,7 +86,6 @@ Use `EventFinalMessage` to capture assistant output for each processed turn.
 - `WorkingDir`: directory exposed to the `bash` tool.
 - `SystemPrompt`: base behavior instructions for the assistant.
 - `ModelID`: model override (`gpt-5.2-codex` default for API key mode, `gpt-5.3-codex` for ChatGPT mode).
-- `MaxToolRounds`: cap on tool-use loops.
 - `QueueCapacity`: max queued messages per session.
 
 ## test

@@ -46,7 +46,6 @@ type RuntimeOptions struct {
 	ModelID        string
 	SystemPrompt   string
 	WorkingDir     string
-	MaxToolRounds  int
 	QueueCapacity  int
 }
 
@@ -66,16 +65,15 @@ type QueueMessageRequest struct {
 }
 
 type Runtime struct {
-	modelID       string
-	systemPrompt  string
-	workingDir    string
-	authMode      provider.AuthMode
-	apiKey        string
-	accessToken   string
-	accountID     string
-	client        provider.Client
-	maxToolRounds int
-	queueCap      int
+	modelID      string
+	systemPrompt string
+	workingDir   string
+	authMode     provider.AuthMode
+	apiKey       string
+	accessToken  string
+	accountID    string
+	client       provider.Client
+	queueCap     int
 
 	mu       sync.RWMutex
 	sessions map[string]*sessionRuntime
@@ -119,17 +117,16 @@ func NewRuntime(options RuntimeOptions) *Runtime {
 	}
 
 	return &Runtime{
-		modelID:       modelID,
-		systemPrompt:  options.SystemPrompt,
-		workingDir:    options.WorkingDir,
-		authMode:      authMode,
-		apiKey:        options.APIKey,
-		accessToken:   options.AccessToken,
-		accountID:     options.AccountID,
-		client:        client,
-		maxToolRounds: options.MaxToolRounds,
-		queueCap:      queueCap,
-		sessions:      map[string]*sessionRuntime{},
+		modelID:      modelID,
+		systemPrompt: options.SystemPrompt,
+		workingDir:   options.WorkingDir,
+		authMode:     authMode,
+		apiKey:       options.APIKey,
+		accessToken:  options.AccessToken,
+		accountID:    options.AccountID,
+		client:       client,
+		queueCap:     queueCap,
+		sessions:     map[string]*sessionRuntime{},
 	}
 }
 
@@ -205,7 +202,6 @@ func (r *Runtime) newSession(sessionID string) *sessionRuntime {
 		Model:          &model.Model{Provider: "openai", ID: r.modelID},
 		ThinkingLevel:  agent.ThinkingXHigh,
 		Tools:          []agent.Tool{bashtool.NewTool(r.workingDir, 0)},
-		MaxToolRounds:  r.maxToolRounds,
 		ProviderClient: r.client,
 		AuthMode:       r.authMode,
 		APIKey:         r.apiKey,

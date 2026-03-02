@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/zahlmann/phi/ai/model"
@@ -11,16 +10,13 @@ import (
 	"github.com/zahlmann/phi/ai/stream"
 )
 
-const defaultMaxToolRounds = 24
-
 type RunnerOptions struct {
-	Client        provider.Client
-	AuthMode      provider.AuthMode
-	APIKey        string
-	AccessToken   string
-	AccountID     string
-	Tools         []Tool
-	MaxToolRounds int
+	Client      provider.Client
+	AuthMode    provider.AuthMode
+	APIKey      string
+	AccessToken string
+	AccountID   string
+	Tools       []Tool
 }
 
 func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.AssistantMessage, error) {
@@ -36,17 +32,12 @@ func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.Assi
 	if len(tools) == 0 {
 		tools = state.Tools
 	}
-	maxRounds := options.MaxToolRounds
-	if maxRounds <= 0 {
-		maxRounds = defaultMaxToolRounds
-	}
 
 	a.emit(Event{Type: EventTurnStart})
 	a.setStreaming(true)
 	defer a.setStreaming(false)
 
-	var lastAssistant *model.AssistantMessage
-	for round := 0; round < maxRounds; round++ {
+	for {
 		conversation := model.Context{
 			SystemPrompt: state.SystemPrompt,
 			Messages:     toModelMessages(a.State().Messages),
@@ -86,7 +77,6 @@ func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.Assi
 
 		a.appendMessage(*result)
 		a.emit(Event{Type: EventMessageEnd, Message: *result})
-		lastAssistant = result
 
 		toolCalls := extractToolCalls(result.ContentRaw)
 		if len(toolCalls) == 0 || result.StopReason != model.StopReasonToolUse {
@@ -109,12 +99,6 @@ func (a *Agent) RunTurn(ctx context.Context, options RunnerOptions) (*model.Assi
 			}
 		}
 	}
-
-	a.emit(Event{Type: EventTurnEnd})
-	if lastAssistant != nil {
-		return lastAssistant, fmt.Errorf("max tool rounds reached without final assistant response")
-	}
-	return nil, fmt.Errorf("max tool rounds reached without assistant response")
 }
 
 func executeToolCall(tools []Tool, call model.ToolCallContent, emit func(Event)) (model.Message, bool) {

@@ -181,33 +181,43 @@ func TestRunTurnToolErrorsBecomeToolResultMessages(t *testing.T) {
 	}
 }
 
-func TestRunTurnReturnsErrorWhenToolRoundsExhausted(t *testing.T) {
+func TestRunTurnReturnsContextErrorWhenToolLoopCancelled(t *testing.T) {
 	tool := &testTool{name: "loop_tool", resultText: "ok"}
 	a := newTestAgent([]Tool{tool})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	providerCalls := 0
 	client := provider.MockClient{
 		Handler: func(ctx context.Context, m model.Model, conversation model.Context, options provider.StreamOptions) (stream.EventStream, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			providerCalls++
+			if providerCalls == 3 {
+				cancel()
+			}
 			return toolCallStream("call_1", "loop_tool", map[string]any{"n": 1}, m), nil
 		},
 	}
 
-	assistant, err := a.RunTurn(context.Background(), RunnerOptions{
-		Client:        client,
-		MaxToolRounds: 2,
+	assistant, err := a.RunTurn(ctx, RunnerOptions{
+		Client: client,
 	})
-	if err == nil || !strings.Contains(err.Error(), "max tool rounds reached") {
-		t.Fatalf("expected max tool rounds error, got %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
 	}
-	if assistant == nil {
-		t.Fatal("expected last assistant response even when max rounds are exhausted")
+	if assistant != nil {
+		t.Fatalf("expected nil assistant on context cancellation, got %#v", assistant)
 	}
-	if tool.calls != 2 {
-		t.Fatalf("expected 2 tool calls, got %d", tool.calls)
+	if tool.calls != 3 {
+		t.Fatalf("expected 3 tool calls before cancellation, got %d", tool.calls)
 	}
 
 	state := a.State()
-	// user + 2x (assistant tool call + tool result)
-	if len(state.Messages) != 5 {
-		t.Fatalf("expected 5 messages, got %d", len(state.Messages))
+	// user + 3x (assistant tool call + tool result)
+	if len(state.Messages) != 7 {
+		t.Fatalf("expected 7 messages, got %d", len(state.Messages))
 	}
 }
 
