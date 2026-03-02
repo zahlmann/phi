@@ -1,5 +1,7 @@
 # phi
 
+![phi](phi.png)
+
 `phi` is a small Go coding-agent library.
 It has one tool: `bash`.
 
