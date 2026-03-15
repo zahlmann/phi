@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -201,24 +202,90 @@ func normalizeReasoningEffort(raw string) string {
 func resolveChatGPTAuth(ctx context.Context, options StreamOptions) (string, string, error) {
 	_ = ctx
 	accessToken := strings.TrimSpace(options.AccessToken)
+	accountID := strings.TrimSpace(options.AccountID)
+
 	if accessToken == "" {
 		accessToken = strings.TrimSpace(os.Getenv("PHI_CHATGPT_ACCESS_TOKEN"))
-	}
-
-	accountID := strings.TrimSpace(options.AccountID)
-	if accountID == "" {
 		accountID = strings.TrimSpace(os.Getenv("PHI_CHATGPT_ACCOUNT_ID"))
 	}
 
 	if accessToken == "" {
+		accessToken, accountID = loadChatGPTAuthFromHome(".phi", "chatgpt_tokens.json")
+	}
+
+	if accessToken == "" {
+		accessToken, accountID = loadCodexChatGPTAuthFromHome()
+	}
+
+	if accessToken == "" {
 		return "", "", errors.New(
-			"chatgpt access token is required (set StreamOptions.AccessToken or PHI_CHATGPT_ACCESS_TOKEN)",
+			"chatgpt access token is required (set StreamOptions.AccessToken, PHI_CHATGPT_ACCESS_TOKEN, ~/.phi/chatgpt_tokens.json, or ~/.codex/auth.json)",
 		)
 	}
 	if accountID == "" {
 		accountID = extractChatGPTAccountIDFromJWT(accessToken)
 	}
 	return accessToken, accountID, nil
+}
+
+type chatGPTTokenFile struct {
+	AccessToken      string `json:"accessToken"`
+	AccountID        string `json:"accountId"`
+	AccessTokenSnake string `json:"access_token"`
+	AccountIDSnake   string `json:"account_id"`
+}
+
+func loadChatGPTAuthFromHome(pathParts ...string) (string, string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", ""
+	}
+	path := filepath.Join(append([]string{homeDir}, pathParts...)...)
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+
+	var decoded chatGPTTokenFile
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return "", ""
+	}
+
+	accessToken := strings.TrimSpace(decoded.AccessToken)
+	if accessToken == "" {
+		accessToken = strings.TrimSpace(decoded.AccessTokenSnake)
+	}
+	accountID := strings.TrimSpace(decoded.AccountID)
+	if accountID == "" {
+		accountID = strings.TrimSpace(decoded.AccountIDSnake)
+	}
+	return accessToken, accountID
+}
+
+type codexAuthFile struct {
+	Tokens struct {
+		AccessToken string `json:"access_token"`
+		AccountID   string `json:"account_id"`
+	} `json:"tokens"`
+}
+
+func loadCodexChatGPTAuthFromHome() (string, string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", ""
+	}
+	path := filepath.Join(homeDir, ".codex", "auth.json")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+
+	var decoded codexAuthFile
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return "", ""
+	}
+
+	return strings.TrimSpace(decoded.Tokens.AccessToken), strings.TrimSpace(decoded.Tokens.AccountID)
 }
 
 func normalizeChatGPTBaseURL(optionBaseURL string, clientBaseURL string) string {

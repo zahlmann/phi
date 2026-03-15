@@ -2,9 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -522,6 +525,8 @@ func TestOpenAIClientStreamValidation(t *testing.T) {
 
 	t.Run("chatgpt token required", func(t *testing.T) {
 		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", "")
+		t.Setenv("PHI_CHATGPT_ACCOUNT_ID", "")
+		t.Setenv("HOME", t.TempDir())
 		client := NewOpenAIClient()
 		_, err := client.Stream(context.Background(), model.Model{
 			Provider: "openai",
@@ -531,6 +536,131 @@ func TestOpenAIClientStreamValidation(t *testing.T) {
 			t.Fatalf("expected chatgpt token validation error, got %v", err)
 		}
 	})
+}
+
+func TestResolveChatGPTAuthPrecedence(t *testing.T) {
+	t.Run("falls back to codex auth by default", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", "")
+		t.Setenv("PHI_CHATGPT_ACCOUNT_ID", "")
+		writeJSONFile(t, filepath.Join(home, ".codex", "auth.json"), map[string]any{
+			"tokens": map[string]any{
+				"access_token": testJWT("codex-account"),
+				"account_id":   "",
+			},
+		})
+
+		token, accountID, err := resolveChatGPTAuth(context.Background(), StreamOptions{})
+		if err != nil {
+			t.Fatalf("resolveChatGPTAuth failed: %v", err)
+		}
+		if token != testJWT("codex-account") {
+			t.Fatalf("expected codex token, got %q", token)
+		}
+		if accountID != "codex-account" {
+			t.Fatalf("expected account id from codex token, got %q", accountID)
+		}
+	})
+
+	t.Run("prefers phi file over codex auth", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", "")
+		t.Setenv("PHI_CHATGPT_ACCOUNT_ID", "")
+		writeJSONFile(t, filepath.Join(home, ".codex", "auth.json"), map[string]any{
+			"tokens": map[string]any{
+				"access_token": testJWT("codex-account"),
+				"account_id":   "",
+			},
+		})
+		writeJSONFile(t, filepath.Join(home, ".phi", "chatgpt_tokens.json"), map[string]any{
+			"accessToken": testJWT("phi-account"),
+			"accountId":   "phi-account",
+		})
+
+		token, accountID, err := resolveChatGPTAuth(context.Background(), StreamOptions{})
+		if err != nil {
+			t.Fatalf("resolveChatGPTAuth failed: %v", err)
+		}
+		if token != testJWT("phi-account") {
+			t.Fatalf("expected phi token, got %q", token)
+		}
+		if accountID != "phi-account" {
+			t.Fatalf("expected phi account id, got %q", accountID)
+		}
+	})
+
+	t.Run("prefers env over file sources", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", testJWT("env-account"))
+		t.Setenv("PHI_CHATGPT_ACCOUNT_ID", "env-account")
+		writeJSONFile(t, filepath.Join(home, ".codex", "auth.json"), map[string]any{
+			"tokens": map[string]any{
+				"access_token": testJWT("codex-account"),
+			},
+		})
+		writeJSONFile(t, filepath.Join(home, ".phi", "chatgpt_tokens.json"), map[string]any{
+			"accessToken": testJWT("phi-account"),
+			"accountId":   "phi-account",
+		})
+
+		token, accountID, err := resolveChatGPTAuth(context.Background(), StreamOptions{})
+		if err != nil {
+			t.Fatalf("resolveChatGPTAuth failed: %v", err)
+		}
+		if token != testJWT("env-account") {
+			t.Fatalf("expected env token, got %q", token)
+		}
+		if accountID != "env-account" {
+			t.Fatalf("expected env account id, got %q", accountID)
+		}
+	})
+
+	t.Run("prefers explicit options over env", func(t *testing.T) {
+		t.Setenv("PHI_CHATGPT_ACCESS_TOKEN", testJWT("env-account"))
+		t.Setenv("PHI_CHATGPT_ACCOUNT_ID", "env-account")
+
+		token, accountID, err := resolveChatGPTAuth(context.Background(), StreamOptions{
+			AccessToken: testJWT("option-account"),
+			AccountID:   "option-account",
+		})
+		if err != nil {
+			t.Fatalf("resolveChatGPTAuth failed: %v", err)
+		}
+		if token != testJWT("option-account") {
+			t.Fatalf("expected option token, got %q", token)
+		}
+		if accountID != "option-account" {
+			t.Fatalf("expected option account id, got %q", accountID)
+		}
+	})
+}
+
+func writeJSONFile(t *testing.T, path string, value any) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+}
+
+func testJWT(accountID string) string {
+	header, _ := json.Marshal(map[string]any{"alg": "none", "typ": "JWT"})
+	payload, _ := json.Marshal(map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": accountID,
+		},
+	})
+	return base64.RawURLEncoding.EncodeToString(header) + "." +
+		base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 func TestOpenAIClientStreamHTTPStatusError(t *testing.T) {

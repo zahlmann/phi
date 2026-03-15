@@ -38,7 +38,8 @@ func run(ctx context.Context) error {
 ## Auth
 
 - API mode: set `OPENAI_API_KEY` (or pass `RuntimeOptions.APIKey`).
-- ChatGPT mode: set `PHI_CHATGPT_ACCESS_TOKEN` (or pass `RuntimeOptions.AccessToken`).
+- ChatGPT mode: pass `RuntimeOptions.AccessToken` (or set `PHI_CHATGPT_ACCESS_TOKEN`).
+  If neither is set, `phi` falls back to `~/.phi/chatgpt_tokens.json`, then `~/.codex/auth.json`.
 
 ## Files That Matter
 

@@ -18,7 +18,8 @@ go get github.com/zahlmann/phi
 - OpenAI API key mode (default):
   set `OPENAI_API_KEY` or pass `RuntimeOptions.APIKey`.
 - ChatGPT mode:
-  set `PHI_CHATGPT_ACCESS_TOKEN` (and optional `PHI_CHATGPT_ACCOUNT_ID`) or pass `RuntimeOptions.AccessToken`/`RuntimeOptions.AccountID`, and set `RuntimeOptions.AuthMode = provider.AuthModeChatGPT`.
+  pass `RuntimeOptions.AccessToken`/`RuntimeOptions.AccountID` or set `PHI_CHATGPT_ACCESS_TOKEN`/`PHI_CHATGPT_ACCOUNT_ID`, and set `RuntimeOptions.AuthMode = provider.AuthModeChatGPT`.
+  If neither is set, `phi` falls back to `~/.phi/chatgpt_tokens.json`, then `~/.codex/auth.json`.
 
 ## minimal usage flow
 
